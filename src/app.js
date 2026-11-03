@@ -1,0 +1,2139 @@
+const DATA = /*DATA*/;
+// ---- engine: game rules and route search ----
+// Touches no page, so the same code also runs in a background worker (see searchAsync below).
+// `store` supplies the search settings (noOver, depth); `onPhase` reports progress.
+function makeEngine(DATA, store) {
+  const api = { onPhase: null };
+  const phase = text => { if (api.onPhase) api.onPhase(text); };
+  const key = it => `${it.p}|${it.b}|${it.s}|${it.l ? 1 : 0}`;
+  const fromKey = k => { const [p, b, s, l] = k.split("|"); return { p, b, s, l: l === "1" }; };
+  const bitsOf = m => { const r = []; for (let x = m; x; x &= x - 1) r.push(31 - Math.clz32(x & -x)); return r; };
+  const popcnt = m => { let c = 0; while (m) { m &= m - 1; c++; } return c; };
+  // for a part set: its highest value (the value itself when it holds one), and whether it holds one
+  const topBit = m => 31 - Math.clz32(m);
+  const isOne = m => m !== 0 && !(m & (m - 1));
+
+  // ---- category rules compiled for speed ----
+  // A "part set" describes an item where each part (base, prefix, suffix, rarity) is a set of
+  // possible values, stored as bits. An owned item has one value per part. A missing item starts
+  // with every value possible. Parts combine independently, so sets combine part by part.
+  const compiledCache = [];
+  function compile(ci) {
+    if (compiledCache[ci]) return compiledCache[ci];
+    const T = DATA[ci].tables;
+    const B = T.base.parts, P = T.prefix ? T.prefix.parts : [], S = T.suffix ? T.suffix.parts : [];
+    const NB = B.length, NP = P.length + 1, NS = S.length + 1; // index 0 of P/S = no affix
+    // the sheet's tables, as result positions; affix tables get an extra "no affix" row and column
+    const table = (t, parts, withNone) => {
+      const off = withNone ? 1 : 0, n = parts.length + off, m = new Int16Array(n * n).fill(-1);
+      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+        if (withNone && (i === 0 || j === 0)) { m[i * n + j] = 0; continue; }
+        const r = t.m[i - off][j - off];
+        if (r >= 0) m[i * n + j] = r + off;
+      }
+      return m;
+    };
+    const tb = table(T.base, B, false), tp = table(T.prefix, P, true), ts = table(T.suffix, S, true);
+    const setComb = (tab, N) => {
+      const cache = new Map();
+      return (A, Bm) => {
+        if (!(A & (A - 1)) && !(Bm & (Bm - 1))) { const v = tab[(31 - Math.clz32(A)) * N + (31 - Math.clz32(Bm))]; return v < 0 ? 0 : 1 << v; }
+        const k = A < Bm ? A + "," + Bm : Bm + "," + A;
+        let r = cache.get(k);
+        if (r === undefined) {
+          r = 0;
+          for (let x = A; x; x &= x - 1) { const i = 31 - Math.clz32(x & -x); for (let y = Bm; y; y &= y - 1) { const v = tab[i * N + (31 - Math.clz32(y & -y))]; if (v >= 0) r |= 1 << v; } }
+          cache.set(k, r);
+        }
+        return r;
+      };
+    };
+    const cb = setComb(tb, NB), cp = setComb(tp, NP), cs = setComb(ts, NS);
+    const full = n => n >= 31 ? -1 >>> 0 : (1 << n) - 1;
+    const WILD = { b: full(NB), p: full(NP), s: full(NS), l: 3 };
+    // name -> position (affix positions count from 1, 0 = no affix; -1 = not in this category)
+    const pos = list => new Map(list.map((v, i) => [v, i]));
+    const bi = pos(B), pi = pos(P), si = pos(S);
+    const idxB = it => bi.get(it.b) ?? -1;
+    const idxP = it => it.p ? (pi.get(it.p) ?? -1) + 1 : 0, idxS = it => it.s ? (si.get(it.s) ?? -1) + 1 : 0;
+    const psOf = it => ({ b: 1 << idxB(it), p: 1 << idxP(it), s: 1 << idxS(it), l: it.l ? 2 : 1 });
+    const psKey = x => x.b + "." + x.p + "." + x.s + "." + x.l;
+    const psComb = (x, y) => {
+      const l = x.l & y.l; if (!l) return null;
+      const b = cb(x.b, y.b); if (!b) return null;
+      const p = cp(x.p, y.p); if (!p) return null;
+      const s = cs(x.s, y.s); if (!s) return null;
+      return { b, p, s, l };
+    };
+    const itemOf = x => ({ b: B[topBit(x.b)], p: topBit(x.p) ? P[topBit(x.p) - 1] : "", s: topBit(x.s) ? S[topBit(x.s) - 1] : "", l: topBit(x.l) === 1 });
+    const combItem = (a, b) => { const r = psComb(psOf(a), psOf(b)); return r ? itemOf(r) : null; };
+    // score: base position + affix positions weighted 3x (affixes are more precious)
+    const score = it => (idxB(it) + 1) + 3 * (idxP(it) + idxS(it));
+    const fns = { b: cb, p: cp, s: cs, l: (a, b) => a & b };
+    return compiledCache[ci] = { B, P, S, NB, NP, NS, WILD, psOf, psKey, psComb, itemOf, combItem, score, idxB, idxP, idxS, fns, hasP: P.length > 0, hasS: S.length > 0 };
+  }
+
+  const matchesLoose = (C, it, L) => { const x = C.psOf(it); return (x.b & L.b) && (x.p & L.p) && (x.s & L.s) && (x.l & L.l); };
+  // what the other item must be so that an item with part set x combines into something within R
+  // (null when nothing can)
+  function preSet(C, x, R) {
+    const S = {};
+    for (const P of ["b", "p", "s", "l"]) {
+      let m = 0; for (const v of bitsOf(C.WILD[P])) if (C.fns[P](x[P], 1 << v) & R[P]) m |= 1 << v;
+      if (!m) return null;
+      S[P] = m;
+    }
+    return S;
+  }
+  const preimage = (C, a, R) => preSet(C, C.psOf(a), R);
+  // the lowest-tier item within a part set
+  const lowOf = (C, R) => C.itemOf({ b: R.b & -R.b, p: R.p & -R.p, s: R.s & -R.s, l: R.l & -R.l });
+  // What buying costs: the minimum price as set, or the highest bid plus 5% to outbid it (rounded
+  // up). No bid and no minimum ("brak", price null) means the lowest possible bid: 1 kk.
+  const payOf = x => x.price == null ? 1 : x.pk === "bid" ? Math.ceil(x.price * 1.05) : x.price;
+  const priceOrder = (a, b) => payOf(a) - payOf(b);
+  // ---- route search ----
+  // Two engines share the same preparation. Small inventories use the exact search: every group
+  // of free items, smallest first, combined in every order. Larger ones use forward-backward:
+  // build small groups forward, then join them backward from the target via a catalogue.
+  // Missing items join as wildcards and are never combined with each other. Routes are ranked
+  // by fewest missing items, then fewest auction items, then the route mode.
+  function targetSets(C, t) {
+    const aff = (v, names) => { const all = (1 << (names.length + 1)) - 1; return v === "*" ? all : v === "+" ? all & ~1 : v === "" ? 1 : 1 << (names.indexOf(v) + 1); };
+    return {
+      b: t.b === "*" ? C.WILD.b : 1 << C.idxB(t),
+      p: C.hasP ? aff(t.p, C.P) : 1,
+      s: C.hasS ? aff(t.s, C.S) : 1,
+      l: t.l === "*" ? 3 : t.l === "1" ? 2 : 1,
+    };
+  }
+  const MAX_STORED = 12e6; // stored groups before the search stops (memory safety)
+  const DEEP_MS = 15000; // hard limit for deep search, all phases together
+  const MAX_PEEL = 6; // how many small groups the search may stack on top of a two-group join
+  const AUCTION_PENALTY = 1000; // makes routes prefer your own items over auction purchases
+  const OVERSHOOT_PENALTY = 1000; // an owned item with an affix above the target's tier
+  // Shared setup: which items can help, interned part sets, cached combines, and the
+  // canonical form of item groups (identical copies are interchangeable).
+  function prepare(C, T, units, limit, abortIfTrimmed) {
+    const needP = (T.p & 1) === 0, needS = (T.s & 1) === 0;
+    const viable = x => (x.l & T.l) && (!needP || (x.p & ~1)) && (!needS || (x.s & ~1));
+    const matches = x => (x.b & T.b) && (x.p & T.p) && (x.s & T.s) && (x.l & T.l);
+    // owned items that already match the target are left out, so the search finds a way to craft one
+    let U = units.map(it => ({ it, ps: C.psOf(it), k: key(it) + (it.src ? "|a" : ""), sc: C.score(it), pen: it.src ? AUCTION_PENALTY : 0 }))
+      .filter(u => viable(u.ps) && (u.it.src || !matches(u.ps)));
+    // Overshoot: an owned item with an affix ABOVE the target's tier is worth more than the target
+    // (e.g. a śmiercionośny … orchidei used for a runiczny … szybkości). Such items are avoided
+    // like auction purchases: a route without them always wins.
+    const capP = isOne(T.p) && T.p !== 1 ? topBit(T.p) : Infinity, capS = isOne(T.s) && T.s !== 1 ? topBit(T.s) : Infinity;
+    if (store.noOver !== false) for (const u of U) if (!u.it.src && (topBit(u.ps.p) > capP || topBit(u.ps.s) > capS)) { u.over = true; u.pen += OVERSHOOT_PENALTY; }
+    // Relevance: combining roughly averages two tiers and adds one, so items near one tier below
+    // each fixed target part help most. Used to pick items when there are too many.
+    for (const u of U) {
+      let r = 0;
+      if (isOne(T.b)) r += Math.abs(topBit(u.ps.b) - (topBit(T.b) - 1));
+      if (isOne(T.p) && T.p !== 1) r += 3 * Math.abs(topBit(u.ps.p) - (topBit(T.p) - 1));
+      if (isOne(T.s) && T.s !== 1) r += 3 * Math.abs(topBit(u.ps.s) - (topBit(T.s) - 1));
+      u.rel = r;
+    }
+    const total = U.length, trimmed = U.length > limit;
+    if (trimmed && abortIfTrimmed) return { trimmed };
+    if (trimmed) { U.sort((a, b) => a.rel - b.rel || a.sc - b.sc); U = U.slice(0, limit); }
+    U.sort((a, b) => a.k < b.k ? -1 : a.k > b.k ? 1 : 0);
+    const n = U.length;
+
+    // part sets are interned as numbers so the inner loops only do numeric lookups
+    const PS = [], ids = new Map(), viab = [], mat = [];
+    const intern = x => { const k = C.psKey(x); let id = ids.get(k); if (id === undefined) { id = PS.length; PS.push(x); ids.set(k, id); viab.push(!!viable(x)); mat.push(!!matches(x)); } return id; };
+    const cc = [];
+    const comb = (a, b) => {
+      if (a > b) { const t = a; a = b; b = t; }
+      const row = cc[a] || (cc[a] = new Map());
+      let r = row.get(b);
+      if (r === undefined) { const x = C.psComb(PS[a], PS[b]); r = x ? intern(x) : -1; if (r >= 0 && !viab[r]) r = -1; row.set(b, r); }
+      return r;
+    };
+    const groups = []; U.forEach((u, i) => { if (i > 0 && U[i - 1].k === u.k) groups[groups.length - 1].push(i); else groups.push([i]); });
+    const gMasks = groups.map(g => g.reduce((m, i) => m | (1 << i), 0) >>> 0);
+    const canonOf = m => { let c = 0; for (let gi = 0; gi < groups.length; gi++) { const k = popcnt(m & gMasks[gi]); for (let q = 0; q < k; q++) c |= 1 << groups[gi][q]; } return c >>> 0; };
+    let canon;
+    if (n <= 16) { const arr = new Uint32Array(1 << n); for (let m = 1; m < (1 << n); m++) arr[m] = canonOf(m); canon = m => arr[m]; }
+    else { const cache = new Map(); canon = m => { let c = cache.get(m); if (c === undefined) cache.set(m, c = canonOf(m)); return c; }; }
+    // groups of a given size, each listed once in canonical form
+    const levels = [[]];
+    const level = pop => {
+      while (levels.length <= pop) {
+        const prev = levels[levels.length - 1], next = [];
+        if (levels.length === 1) { for (let i = 0; i < n; i++) { const m = 1 << i >>> 0; if (canon(m) === m) next.push(m); } }
+        else for (const base of prev) { const top = 31 - Math.clz32(base); for (let j = top + 1; j < n; j++) { const m = (base | (1 << j)) >>> 0; if (canon(m) === m) next.push(m); } }
+        levels.push(next);
+      }
+      return levels[pop];
+    };
+    // two groups can be used together if no item type is needed more times than you own it
+    const fits = (a, b) => { if (!(a & b)) return true; for (let gi = 0; gi < groups.length; gi++) if (popcnt(a & gMasks[gi]) + popcnt(b & gMasks[gi]) > groups[gi].length) return false; return true; };
+    const fitsAll = ms => { for (let gi = 0; gi < groups.length; gi++) { let c = 0; for (const m of ms) c += popcnt(m & gMasks[gi]); if (c > groups[gi].length) return false; } return true; };
+    const ownedCost = m => { let c = 0; for (const i of bitsOf(m)) c += U[i].sc + U[i].pen; return c; };
+    return { U, n, total, trimmed, PS, ids, mat, intern, comb, canon, level, fits, fitsAll, ownedCost };
+  }
+  const SK = (mask, w) => mask * 8 + w; // memo key: item group + number of missing items
+  // Builds every item a group of `pop` items plus W missing items can make, from smaller groups.
+  // Returns false if the time check `stop` asked to end early.
+  function buildLevel(X, memo, pop, W, stop) {
+    for (const mask of X.level(pop)) {
+      if (pop === 1 && W === 0) continue;
+      if (X.skipMask && W > 0 && X.skipMask(mask)) continue;
+      const res = new Map(), low = mask & -mask;
+      for (let sub = mask; sub; sub = (sub - 1) & mask) {
+        if (!(sub & low)) continue;
+        const rest = (mask ^ sub) >>> 0, ca = X.canon(sub >>> 0), cbm = rest ? X.canon(rest) : 0;
+        for (let wA = 0; wA <= W; wA++) {
+          const wB = W - wA;
+          if (!rest && wB !== 1) continue;
+          const ska = SK(ca, wA), skb = SK(cbm, wB);
+          const A = memo.get(ska), Bm = memo.get(skb);
+          if (!A || !Bm) continue;
+          const ia = A.ids || (A.ids = [...A.keys()]), ib = Bm.ids || (Bm.ids = [...Bm.keys()]);
+          for (let x = 0; x < ia.length; x++) { const ka = ia[x]; for (let y = 0; y < ib.length; y++) {
+            if (stop()) return false;
+            const kb = ib[y], r = X.comb(ka, kb);
+            if (r < 0 || res.has(r)) continue;
+            res.set(r, { a: ska, ka, b: skb, kb });
+          } }
+        }
+      }
+      if (res.size) { memo.set(SK(mask, W), res); X.stored = (X.stored || 0) + res.size; X.onState && X.onState(mask, W, res); }
+    }
+    return true;
+  }
+  function seedMemo(X) {
+    const memo = new Map();
+    for (const m of X.level(1)) { const i = 31 - Math.clz32(m); memo.set(SK(m, 0), new Map([[X.intern(X.U[i].ps), { leaf: i }]])); }
+    memo.set(SK(0, 1), new Map([[X.intern(X.WILD), { wild: true }]]));
+    return memo;
+  }
+
+  // Exact search: all groups, smallest first. Fastest mode stops at the first size that works.
+  function search(C, T, units, opts) {
+    const X = prepare(C, T, units, opts.limit, true);
+    if (X.trimmed) return { trimmed: true, skipped: true };
+    X.WILD = opts.wild || C.WILD;
+    // routes with missing items only combine them with the most relevant items
+    const relOrder = X.U.map((u, i) => i).sort((a, b) => X.U[a].rel - X.U[b].rel || X.U[a].sc - X.U[b].sc);
+    let wildAllowed = 0; relOrder.slice(0, opts.wildLimit).forEach(i => wildAllowed |= 1 << i);
+    X.skipMask = mask => (mask & ~wildAllowed) !== 0;
+    const cands = [];
+    let foundHere = false, curL = 0;
+    X.onState = (mask, W, res) => { for (const k of res.keys()) if (X.mat[k]) { cands.push({ sk: SK(mask, W), k, mask, W, L: curL }); foundHere = true; } };
+    const memo = seedMemo(X);
+    const deadline = performance.now() + opts.timeMs;
+    let ops = 0, partial = false;
+    const stop = () => { if ((++ops & 0xffff) === 0 && performance.now() > deadline) { partial = true; return true; } return false; };
+    outer: for (let W = 0; W <= opts.maxW; W++) {
+      for (let L = Math.max(2, W + 1); L <= X.n + W; L++) {
+        const pop = L - W;
+        if (pop < 1 || pop > X.n) continue;
+        foundHere = false; curL = L;
+        if (!buildLevel(X, memo, pop, W, stop)) break outer;
+        if (foundHere && opts.mode === "fast") break;
+      }
+      if (cands.length) break;
+    }
+    return { cands, memo, U: X.U, partial, T, n: X.n, trimmed: false, total: X.total, ownedCost: X.ownedCost, WILD: X.WILD };
+  }
+
+  // Forward-backward search for larger inventories.
+  function piecesSearch(C, T, units, opts) {
+    const X = prepare(C, T, units, 30);
+    X.WILD = opts.wild || C.WILD;
+    const memo = seedMemo(X);
+    // smaller groups first, then the ones made of cheaper items
+    const ord = (a, b) => a.pop - b.pop || a.oc - b.oc;
+    let joinEnd = Infinity;
+    // Catalogue the pieces built so far and join them backward from the target.
+    const evalCands = final => {
+      const byId = new Map(), wildPieces = [];
+      for (const [sk, res] of memo) {
+        const w = sk % 8, mask = (sk - w) / 8;
+        if (!mask) continue;
+        const e0 = { sk, mask, pop: popcnt(mask), oc: X.ownedCost(mask) };
+        for (const k of res.keys()) {
+          if (w === 0) { let l = byId.get(k); if (!l) byId.set(k, l = []); l.push(e0); }
+          else wildPieces.push({ ...e0, k, w });
+        }
+      }
+      for (const l of byId.values()) l.sort(ord);
+      // which partner a piece needs: for each part, every value that turns this piece into the target
+      const preCaches = new Map();
+      const preOf = (id, TT = T) => {
+        let cache = preCaches.get(TT); if (!cache) preCaches.set(TT, cache = new Map());
+        let S = cache.get(id);
+        if (S === undefined) cache.set(id, S = preSet(C, X.PS[id], TT));
+        return S;
+      };
+      const ownedIds = [...byId.keys()];
+      const lookup = S => {
+        const out = [];
+        if (popcnt(S.b) * popcnt(S.p) * popcnt(S.s) * popcnt(S.l) <= 400) {
+          for (const b of bitsOf(S.b)) for (const p of bitsOf(S.p)) for (const s of bitsOf(S.s)) for (const l of bitsOf(S.l)) {
+            const id = X.ids.get((1 << b) + "." + (1 << p) + "." + (1 << s) + "." + (1 << l));
+            if (id !== undefined && byId.has(id)) out.push(id);
+          }
+        } else for (const id of ownedIds) { const y = X.PS[id]; if ((y.b & S.b) && (y.p & S.p) && (y.s & S.s) && (y.l & S.l)) out.push(id); }
+        return out;
+      };
+      // keeps only the best candidates (fewest missing first, then the route preference);
+      // Optimal keeps many, because it builds a ladder of trade-offs from them
+      const cands = [];
+      const nAuc = c => Math.floor(c.oc / AUCTION_PENALTY);
+      const cmp = (a, b) => a.W - b.W || nAuc(a) - nAuc(b) || ord({ pop: a.L, oc: a.oc }, { pop: b.L, oc: b.oc });
+      const add = c => {
+        if (opts.mode === "optimal") { if (cands.length < 20000) cands.push(c); return; }
+        if (cands.length >= 48) { if (cmp(c, cands[cands.length - 1]) >= 0) return; cands.pop(); }
+        let i = cands.length; cands.push(c);
+        while (i > 0 && cmp(cands[i - 1], c) > 0) { cands[i] = cands[i - 1]; i--; }
+        cands[i] = c;
+      };
+      for (let W = 0; W <= opts.maxW && !cands.length; W++) {
+        if (W === 0) {
+          for (const [id, l] of byId) if (X.mat[id]) add({ kind: "one", a: l[0], ka: id, W: 0, L: l[0].pop, oc: l[0].oc });
+          // join two pieces through the catalogue
+          for (const x of ownedIds) {
+            if (performance.now() > joinEnd) break;
+            const S = preOf(x); if (!S) continue;
+            const Lx = byId.get(x);
+            for (const y of lookup(S)) {
+              if (y < x) continue;
+              const Ly = byId.get(y);
+              let best = null;
+              for (let i = 0; i < Lx.length && i < 40; i++) {
+                for (let j = 0; j < Ly.length && j < 40; j++) {
+                  const a = Lx[i], b = Ly[j];
+                  if (x === y && i === j) continue;
+                  if (!X.fits(a.mask, b.mask)) continue;
+                  const c = { kind: "join", a, ka: x, b, kb: y, W: 0, L: a.pop + b.pop, oc: a.oc + b.oc };
+                  if (!best || ord({ pop: c.L, oc: c.oc }, { pop: best.L, oc: best.oc }) < 0) best = c;
+                  break;
+                }
+              }
+              if (best) add(best);
+            }
+          }
+          // Peel: when no two groups make the target, take a small group (1-2 items) off the top
+          // and look for one or two groups that make what it needs. If that fails too, peel again,
+          // level by level, until the time runs out. Each level reaches one small group deeper.
+          // (also when every route found so far needs an auction purchase: one from your own items is better)
+          if (final && cands.every(c => c.oc >= AUCTION_PENALTY)) {
+            const peelEnd = performance.now() + (opts.peelMs || 1500);
+            const smalls = [];
+            for (const [id, l] of byId) for (const e of l) if (e.pop <= 2) smalls.push({ e, id });
+            smalls.sort((a, b) => a.e.pop - b.e.pop || ord(a.e, b.e));
+            const sKey = S => S.b + "." + S.p + "." + S.s + "." + S.l;
+            let frontier = [{ S: T, used: [], chain: [], pop: 0, oc: 0 }];
+            const seen = new Set();
+            peel: for (let depth = 1; depth <= MAX_PEEL && frontier.length && cands.every(c => c.oc >= AUCTION_PENALTY); depth++) {
+              const next = [];
+              for (const st of frontier) for (const { e, id } of smalls) {
+                if (performance.now() > peelEnd) break peel;
+                const used = [...st.used, e.mask];
+                if (!X.fitsAll(used)) continue;
+                const S1 = preOf(id, st.S); if (!S1) continue;
+                const k = sKey(S1) + "|" + used.slice().sort().join(",");
+                if (seen.has(k)) continue; seen.add(k);
+                const chain = [...st.chain, { e, id }], pop = st.pop + e.pop, oc = st.oc + e.oc;
+                // one group that is already what is needed
+                for (const y of lookup(S1)) for (const b of byId.get(y).slice(0, 20)) {
+                  if (!X.fitsAll([...used, b.mask])) continue;
+                  add({ kind: "chain", chain, end: { a: b, ka: y }, W: 0, L: pop + b.pop, oc: oc + b.oc }); break;
+                }
+                // two groups that combine into it
+                for (const x of ownedIds) {
+                  if (performance.now() > peelEnd) break peel;
+                  const S2 = preOf(x, S1); if (!S2) continue;
+                  const Lx = byId.get(x);
+                  for (const y of lookup(S2)) {
+                    if (y < x) continue;
+                    const Ly = byId.get(y);
+                    let best = null;
+                    for (let i = 0; i < Lx.length && i < 12; i++) for (let j = 0; j < Ly.length && j < 12; j++) {
+                      const a = Lx[i], b = Ly[j];
+                      if (x === y && i === j) continue;
+                      if (!X.fitsAll([...used, a.mask, b.mask])) continue;
+                      const c = { kind: "chain", chain, end: { a, ka: x, b, kb: y }, W: 0, L: pop + a.pop + b.pop, oc: oc + a.oc + b.oc };
+                      if (!best || ord({ pop: c.L, oc: c.oc }, { pop: best.L, oc: best.oc }) < 0) best = c;
+                    }
+                    if (best) add(best);
+                  }
+                }
+                next.push({ S: S1, used, chain, pop, oc });
+              }
+              frontier = next;
+            }
+          }
+        } else {
+          for (const p of wildPieces) if (p.w === W && X.mat[p.k]) add({ kind: "one", a: p, ka: p.k, W, L: p.pop + W, oc: p.oc });
+          // a piece plus one missing item on top
+          const bases = W === 1 ? [...byId].map(([id, l]) => ({ ...l[0], k: id })) : wildPieces.filter(p => p.w === W - 1);
+          for (const p of bases) {
+            const S0 = preOf(p.k); if (!S0) continue;
+            // the missing item on top may only take values a missing item is allowed to have
+            const S = { b: S0.b & X.WILD.b, p: S0.p & X.WILD.p, s: S0.s & X.WILD.s, l: S0.l & X.WILD.l };
+            if (!S.b || !S.p || !S.s || !S.l) continue;
+            add({ kind: "top", a: p, ka: p.k, W, L: p.pop + W, oc: p.oc + C.score(lowOf(C, S)) });
+          }
+        }
+      }
+      return cands;
+    };
+    // Forward: piece size grows level by level until the time budget is used up. Pieces carry at
+    // most one missing item; more go on top during the join.
+    let g = 1, early = null, ops = 0, capped = false;
+    const fwdEnd = performance.now() + opts.fwdMs, grace = opts.hard ? 0 : 300;
+    // memory cap: past this many stored groups the browser tab risks running out of memory
+    const stop = () => { if ((++ops & 0x3fff) !== 0) return false; if (X.stored > MAX_STORED) { capped = true; return true; } return performance.now() > fwdEnd + grace; };
+    let lastT = 0, lastDur = 0, prevDur = 0;
+    outer: for (let L = 2; L <= X.n + 1; L++) {
+      const now = performance.now();
+      if (L > 2 && now > fwdEnd) break;
+      // hard budget: don't start a size that can't finish (each size costs ~10x the previous one)
+      if (opts.hard && L > 3 && lastDur > 5) {
+        const growth = Math.max(5, prevDur > 0 ? lastDur / prevDur : 10);
+        if (now + lastDur * growth > fwdEnd) break;
+      }
+      lastT = now;
+      phase(`Grupy do ${L} przedmiotów`);
+      for (let W = 0; W <= 1; W++) {
+        const pop = L - W;
+        if (pop < 1 || pop > X.n) continue;
+        if (W === 0) g = pop;
+        if (!buildLevel(X, memo, pop, W, stop)) { if (W === 0) g = pop - 1; break outer; }
+      }
+      prevDur = lastDur; lastDur = performance.now() - lastT;
+      // Fastest mode: stop as soon as the best route found is provably the shortest. Any shorter
+      // route would be made of two groups no bigger than the ones already built.
+      if (opts.mode === "fast") {
+        const cs = evalCands();
+        if (cs.length && cs[0].W === 0 && cs[0].L <= g + 1 && cs.some(c => c.W === 0 && c.oc < AUCTION_PENALTY)) { early = cs; break outer; }
+      }
+    }
+    joinEnd = opts.joinMs ? performance.now() + opts.joinMs : Infinity;
+    if (!early) phase("Łączenie grup");
+    return { memo, U: X.U, T, n: X.n, total: X.total, trimmed: X.trimmed, partial: capped, g, engine: "pieces", WILD: X.WILD, cands: early || evalCands(true) };
+  }
+
+  // Turns a stored search result back into a tree of owned items and missing items.
+  function rawFromMemo(R, sk, k) {
+    const node = R.memo.get(sk).get(k);
+    if ("leaf" in node) return { leaf: true, u: R.U[node.leaf] };
+    if (node.wild) return { wild: true };
+    return { kids: [rawFromMemo(R, node.a, node.ka), rawFromMemo(R, node.b, node.kb)] };
+  }
+  // Picks the lowest-tier value for each missing item's parts, and works out each missing
+  // item's loosest form (every value of a part that would still work).
+  function concretizeRaw(C, raw, T, WILD = C.WILD) {
+    const wilds = [];
+    const clone = nd => nd.leaf ? nd : nd.wild ? (() => { const w = { wild: true, assign: {} }; wilds.push(w); return w; })() : { kids: nd.kids.map(clone) };
+    const root = clone(raw);
+    for (const P of ["b", "p", "s", "l"]) {
+      const fn = C.fns[P], vals = bitsOf(WILD[P]);
+      const ev = nd => nd.leaf ? nd.u.ps[P] : nd.wild ? (nd.assign[P] ?? WILD[P]) : fn(ev(nd.kids[0]), ev(nd.kids[1]));
+      for (const w of wilds) for (const v of vals) { w.assign[P] = 1 << v; if (ev(root) & T[P]) break; }
+      for (const w of wilds) {
+        const keep = w.assign[P]; let ok = 0;
+        for (const v of vals) { w.assign[P] = 1 << v; if (ev(root) & T[P]) ok |= 1 << v; }
+        w.assign[P] = keep; (w.loose ||= {})[P] = ok;
+      }
+    }
+    let step = 0, cost = 0, leaves = 0, auction = 0, over = 0;
+    const fin = nd => {
+      if (nd.leaf) { cost += nd.u.sc; leaves++; if (nd.u.over) over++; if (nd.u.it.src) { auction++; return { it: nd.u.it, leaf: true, auction: true }; } return { it: nd.u.it, leaf: true }; }
+      if (nd.wild) { const it = C.itemOf(nd.assign); cost += C.score(it); leaves++; return { it, leaf: true, wild: true, loose: nd.loose }; }
+      const a = fin(nd.kids[0]), b = fin(nd.kids[1]);
+      return { it: C.combItem(a.it, b.it), kids: [a, b], step: ++step };
+    };
+    const tree = fin(root);
+    return { tree, cost, steps: step, missing: wilds.length, auction, over, L: leaves };
+  }
+
+  // ---- Najtańsza: top-down search, lower tiers only ----
+  // Works down from the target. Every item put into a combine must have a lower prefix tier and a
+  // lower suffix tier than the item it makes (bases don't count for this rule; "no affix" may only
+  // come from "no affix"). The tree goes at most `depth` combines deep. Each node is filled with the
+  // cheapest of: an item you own, an auction item, a missing item, or two lower items combined.
+  // Ranking: fewest missing, fewest auction, lowest missing tiers, lowest owned tiers, fewest steps.
+  // Item copies are not limited while searching; afterwards only the copies you own are marked as
+  // owned and any extra use becomes a missing item.
+  function topDown(C, T, units, depth) {
+    const NB = C.NB, NP = C.NP, NS = C.NS;
+    const tab = (P, n) => { const r = []; for (let i = 0; i < n; i++) r.push([]); for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) { const m = C.fns[P](1 << a, 1 << b); if (m) r[topBit(m)].push([a, b]); } return r; };
+    const pb = tab("b", NB), pp = tab("p", NP), ps = tab("s", NS);
+    for (const r of pb) for (let i = r.length - 1; i >= 0; i--) if (r[i][0] > r[i][1]) r.splice(i, 1); // bases: unordered
+    const lower = (list, t) => list.filter(([a, b]) => t === 0 ? a === 0 && b === 0 : a < t && b < t);
+    const sk = (b, p, s, l) => ((l * 32 + b) * 32 + p) * 32 + s;
+    const avail = new Map(); // spec -> owned units, auction units
+    for (const u of units) {
+      const x = C.psOf(u), k = sk(topBit(x.b), topBit(x.p), topBit(x.s), x.l === 2 ? 1 : 0);
+      if (!avail.has(k)) avail.set(k, { own: [], auc: [] });
+      (u.src ? avail.get(k).auc : avail.get(k).own).push(u);
+    }
+    for (const v of avail.values()) v.auc.sort(priceOrder);
+    const cmp = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
+    const memo = new Map(), deadline = performance.now() + 8000;
+    const solve = (b, p, s, l, d, root) => {
+      const key = sk(b, p, s, l) * 16 + d + (root ? 8 : 0);
+      let r = memo.get(key); if (r) return r;
+      r = { c: [1, 0, p + s, 0, 0], kind: "miss" };
+      if (root) r = { c: [99, 0, 0, 0, 0], kind: "none" };
+      const av = avail.get(sk(b, p, s, l));
+      if (!root && av) {
+        if (av.own.length) r = { c: [0, 0, 0, p + s, 0], kind: "own" };
+        else if (av.auc.length) r = { c: [0, 1, 0, 0, 0], kind: "auc" };
+      }
+      if (d > 0 && r.c[0] + r.c[1] > 0 && performance.now() < deadline) {
+        const P2 = lower(pp[p], p), S2 = lower(ps[s], s);
+        for (const [b1, b2] of pb[b]) for (const [p1, p2] of P2) for (const [s1, s2] of S2) {
+          const A = solve(b1, p1, s1, l, d - 1, false), B = solve(b2, p2, s2, l, d - 1, false);
+          const c = A.c.map((v, i) => v + B.c[i]); c[4] += 1;
+          if (cmp(c, r.c) < 0) r = { c, kind: "split", A: [b1, p1, s1, l, d - 1], B: [b2, p2, s2, l, d - 1] };
+        }
+      }
+      memo.set(key, r); return r;
+    };
+    let best = null;
+    for (const l of bitsOf(T.l)) for (const b of bitsOf(T.b)) for (const p of bitsOf(T.p)) for (const s of bitsOf(T.s)) {
+      const r = solve(b, p, s, l === 1 ? 1 : 0, depth, true);
+      if (r.kind === "split" && (!best || cmp(r.c, best.r.c) < 0)) best = { r, spec: [b, p, s, l === 1 ? 1 : 0, depth] };
+    }
+    if (!best) return { R: { engine: "topdown", partial: false, trimmed: false, T }, routes: [], higher: [] };
+    // build the tree; owned copies are handed out in order, extra uses become missing
+    const left = new Map([...avail].map(([k, v]) => [k, { own: v.own.slice(), auc: v.auc.slice() }]));
+    const itemOfSpec = (b, p, s, l) => C.itemOf({ b: 1 << b, p: 1 << p, s: 1 << s, l: l ? 2 : 1 });
+    const build = (spec, r) => {
+      const [b, p, s, l] = spec, it = itemOfSpec(b, p, s, l);
+      if (r.kind === "split") return { it, kids: [build(r.A, solve(...r.A, false)), build(r.B, solve(...r.B, false))], spec };
+      const pool = left.get(sk(b, p, s, l));
+      if (r.kind === "own" && pool && pool.own.length) return { it: pool.own.shift(), leaf: true, spec };
+      if ((r.kind === "own" || r.kind === "auc") && pool && pool.auc.length) return { it: pool.auc.shift(), leaf: true, auction: true, spec };
+      return { it, leaf: true, wild: true, loose: C.psOf(it), spec };
+    };
+    const tree = build(best.spec, best.r);
+    let step = 0, missing = 0, auction = 0, L = 0, cost = 0;
+    (function num(t) { if (t.kids) { t.kids.forEach(num); t.step = ++step; } else { L++; cost += C.score(t.it); if (t.wild) missing++; if (t.auction) auction++; } })(tree);
+    // higher-tier items you own that could stand in somewhere: shown, never used automatically
+    const higher = [], seen = new Set();
+    walk(tree, t => {
+      if (t.leaf && !t.wild) return;
+      const [b, p, s, l] = t.spec, N = { b: 1 << b, p: 1 << p, s: 1 << s, l: l ? 2 : 1 };
+      for (const v of avail.values()) for (const u of [...v.own.slice(0, 1), ...v.auc.slice(0, 1)]) {
+        const x = C.psOf(u); if (topBit(x.p) <= p && topBit(x.s) <= s) continue;
+        if (matchesLoose(C, u, T) || !preimage(C, u, N)) continue;
+        const k = key(u) + "|" + key(t.it); if (seen.has(k)) continue; seen.add(k);
+        higher.push({ u, at: t, step: t.step });
+      }
+    });
+    return { R: { engine: "topdown", partial: false, trimmed: false, T, total: units.length, n: units.length, depth }, routes: [{ tree, cost, steps: step, missing, auction, over: 0, L }], higher: higher.slice(0, 12) };
+  }
+
+  // Items with an affix above the target's tier are kept out entirely: the search runs without them
+  // first, and only if that finds nothing at all (not even with missing items) are they allowed.
+  // t: a target affix fixed to one value (not "no affix"); x: an item's affix that goes above it
+  const aboveTier = (t, x) => isOne(t) && t !== 1 && topBit(x) > topBit(t);
+  const overOf = (C, T, it) => { const x = C.psOf(it); return aboveTier(T.p, x.p) || aboveTier(T.s, x.s); };
+  // the values a missing item may take: nothing above the target's prefix or suffix tier
+  // an item that already matches or beats the target in every named affix (and is not missing one)
+  const atLeastTarget = (C, T, it) => { const x = C.psOf(it), fixed = [[T.p, x.p], [T.s, x.s]].filter(([t]) => isOne(t) && t !== 1);
+    return fixed.length > 0 && fixed.every(([t, v]) => topBit(v) >= topBit(t)); };
+  // your own items in a route whose prefix or suffix is above the target's
+  const usesOver = (C, T, tree) => { let n = 0; walk(tree, t => { if (t.leaf && !t.wild && !t.auction && overOf(C, T, t.it)) n++; }); return n; };
+  const capWild = (C, T) => {
+    const lim = (m, w) => isOne(m) && m !== 1 ? w & ((2 << topBit(m)) - 1) : w;
+    return { b: C.WILD.b, p: lim(T.p, C.WILD.p), s: lim(T.s, C.WILD.s), l: C.WILD.l };
+  };
+  function findRoutes(C, T, units, mode, deep, avoid) {
+    if (mode === "cheap") {
+      phase("Najtańsza: od celu w dół");
+      // manual plan fills: the bigger target and the items above this slot stay out
+      const banned = new Set(avoid && avoid.keys || []);
+      const pool = avoid ? units.filter(u => !(avoid.set && matchesLoose(C, u, avoid.set)) && !banned.has(key(u))) : units;
+      const F = topDown(C, T, pool, Math.max(1, Math.min(8, +store.depth || 5)));
+      return F.routes.length && !redundant(C, F.routes[0].tree, T, avoid) ? F : { ...F, routes: [] };
+    }
+    if (store.noOver === false) return findRoutesIn(C, T, units, mode, deep, avoid);
+    const cap = avoid && avoid.set || T;
+    // first: no item above the target's tier anywhere among what you use, buy or still need to find
+    // (items made inside the route may go higher); this may take more steps and more missing items
+    const keep = units.filter(u => !overOf(C, cap, u));
+    const F = findRoutesIn(C, T, keep, mode, deep, avoid, capWild(C, cap));
+    if (!F.routes.length) {
+      phase("Drugie podejście: także przedmioty lepsze niż cel");
+      return findRoutesIn(C, T, units, mode, deep, avoid);
+    }
+    if (avoid) return F; // manual plan fills: no alternatives
+    // An open prefix or suffix ("dowolny") is known only once the route is found. If the route
+    // used your items above what it makes, search again with that prefix and suffix fixed, so
+    // "dowolny" gives the same answer as naming the result.
+    const r = F.routes[0], res = C.psOf(r.tree.it);
+    const Tr = { ...T, p: isOne(T.p) ? T.p : res.p, s: isOne(T.s) ? T.s : res.s };
+    if ((Tr.p !== T.p || Tr.s !== T.s) && usesOver(C, Tr, r.tree)) {
+      phase("Wynik znany: szukam bez przedmiotów lepszych niż on");
+      const F2 = findRoutes(C, Tr, units, mode, deep, avoid);
+      if (F2.routes.length) return F2.alt ? F2 : { ...F2, alt: F };
+    }
+    // Keeping better items out can cost missing items: the route with them is offered, not chosen.
+    if (r.missing > 0) {
+      phase("Sprawdzam ścieżkę z lepszymi przedmiotami");
+      // never an item at least as good as the target in every affix it names: you'd destroy a
+      // better version of what you are making
+      const G = findRoutesIn(C, T, units.filter(u => !atLeastTarget(C, T, u)), mode, deep, avoid);
+      if (G.routes.length && G.routes[0].missing < r.missing) return { ...F, alt: G };
+    }
+    return F;
+  }
+  // Picks the engine: exact search for small inventories, forward-backward for larger ones.
+  // Deep search shares one hard 15 s budget: exact search up to 6 s, then forward building, with
+  // the last 2.5 s kept for joining the groups and preparing the routes.
+  function findRoutesIn(C, T, units, mode, deep, avoid, wild) {
+    const t0 = performance.now(), left = () => DEEP_MS - (performance.now() - t0);
+    const exactN = deep ? 16 : mode === "fast" ? 12 : 10;
+    phase("Dokładne szukanie");
+    const R = search(C, T, units, { mode, maxW: 4, limit: exactN, wildLimit: deep ? 11 : 9, timeMs: deep ? 6000 : 10000, wild });
+    if (!R.skipped && !(deep && R.partial && !R.cands.length)) return finish(C, R, mode, R.cands.map(c => ({ raw: () => rawFromMemo(R, c.sk, c.k), L: c.L, oc: R.ownedCost(c.mask), W: c.W })), avoid);
+    phase("Budowanie grup przedmiotów");
+    const P = piecesSearch(C, T, units, deep ? { mode, maxW: 4, fwdMs: Math.max(1500, left() - 4500), joinMs: 1000, peelMs: 3000, hard: true, wild } : { mode, maxW: 4, fwdMs: 1500, wild });
+    const build = c => {
+      if (c.kind === "chain") {
+        let raw = c.end.b ? { kids: [rawFromMemo(P, c.end.a.sk, c.end.ka), rawFromMemo(P, c.end.b.sk, c.end.kb)] } : rawFromMemo(P, c.end.a.sk, c.end.ka);
+        for (let i = c.chain.length - 1; i >= 0; i--) raw = { kids: [rawFromMemo(P, c.chain[i].e.sk, c.chain[i].id), raw] };
+        return raw;
+      }
+      const ra = rawFromMemo(P, c.a.sk, c.ka);
+      if (c.kind === "one") return ra;
+      if (c.kind === "top") return { kids: [ra, { wild: true }] };
+      return { kids: [ra, rawFromMemo(P, c.b.sk, c.kb)] };
+    };
+    return finish(C, P, mode, P.cands.map(c => ({ raw: () => build(c), L: c.L, oc: c.oc, W: c.W })), avoid);
+  }
+  // A route that makes or uses an item that already is the target somewhere below the top is
+  // pointless (you would have the target already), so such routes are not shown.
+  // `avoid` (manual plan): a bigger target this route is only part of; no item anywhere in the
+  // route, top included, may already be that target.
+  // Loops are pointless too: no item may be made from, or use, that same item further down its own
+  // branch (B made from A while A below it is made from B). `avoid.keys` = items above this route
+  // in a manual plan.
+  function redundant(C, tree, T, avoid) {
+    let bad = false;
+    const m = (it, S) => { const x = C.psOf(it); return (x.b & S.b) && (x.p & S.p) && (x.s & S.s) && (x.l & S.l); };
+    (function go(t, top, above) {
+      if (bad) return;
+      const k = key(t.it);
+      if ((!top && m(t.it, T)) || (avoid && avoid.set && m(t.it, avoid.set)) || above.has(k)) { bad = true; return; }
+      if (t.kids) { const next = new Set(above); next.add(k); t.kids.forEach(c => go(c, false, next)); }
+    })(tree, true, new Set(avoid && avoid.keys || []));
+    return bad;
+  }
+  function finish(C, R, mode, list, avoid) {
+    if (!list.length) return { R, routes: [] };
+    phase("Porządkowanie ścieżek");
+    let minW = Infinity; for (const x of list) if (x.W < minW) minW = x.W;
+    const cs = list.filter(x => x.W === minW);
+    if (mode === "optimal") {
+      // Optimal: a ladder of trade-offs. Each step uses more of your items and in return needs a
+      // cheaper purchase (missing and auction items), measured as prefix tier + suffix tier.
+      const rs = cs.slice(0, 20000).map(x => concretizeRaw(C, x.raw(), R.T, R.WILD)).filter(r => !redundant(C, r.tree, R.T, avoid)).map(r => {
+        let buyP = 0, buyS = 0, buyB = 0;
+        walk(r.tree, n => { if (n.wild || n.auction) { buyP += C.idxP(n.it); buyS += C.idxS(n.it); buyB += C.idxB(n.it); } });
+        return { ...r, used: r.L - r.missing - r.auction, buy: buyP + buyS, buyP, buyS, buyB };
+      });
+      // your own items first: only routes with the fewest auction purchases make the ladder
+      // and items above the target's tier are kept out where possible
+      const costly = r => r.auction * 100 + r.over;
+      let minA = Infinity; for (const r of rs) if (costly(r) < minA) minA = costly(r);
+      const own = rs.filter(r => costly(r) === minA);
+      own.sort((a, b) => a.used - b.used || a.buy - b.buy || a.buyB - b.buyB || a.steps - b.steps || a.cost - b.cost);
+      const ladder = []; let bestBuy = Infinity;
+      for (const r of own) if (r.buy < bestBuy) { ladder.push(r); bestBuy = r.buy; }
+      return { R, routes: ladder, ladder: true };
+    }
+    // Najszybsza: fewest auction items, then the fewest items (shortest route), then the cheapest
+    const nA = x => Math.floor(x.oc / AUCTION_PENALTY);
+    cs.sort((a, b) => nA(a) - nA(b) || a.L - b.L || a.oc - b.oc);
+    const routes = [];
+    for (let i = 0; i < cs.length && i < 400 && routes.length < 16; i++) { const r = concretizeRaw(C, cs[i].raw(), R.T, R.WILD); if (!redundant(C, r.tree, R.T, avoid)) routes.push(r); }
+    routes.sort((a, b) => a.auction - b.auction || a.over - b.over || a.L - b.L || a.cost - b.cost);
+    const out = [], seen = new Set();
+    for (const r of routes) { const sig = JSON.stringify(r.tree); if (seen.has(sig)) continue; seen.add(sig); out.push(r); if (out.length === 3) break; }
+    return { R, routes: out };
+  }
+
+  const walk = (t, f) => { if (t.kids) t.kids.forEach(k => walk(k, f)); f(t); };
+  return Object.assign(api, { key, fromKey, bitsOf, popcnt, topBit, isOne, compile, matchesLoose, preSet, preimage, lowOf, payOf, priceOrder, targetSets, findRoutes, overOf, usesOver, capWild, redundant, walk });
+}
+(() => {
+  const $ = id => document.getElementById(id);
+  const KEY = "bw-forge-v2";
+  const store = (() => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } })();
+  // every change goes through persist(), which also drops the cached item allocation
+  let allocCache = null;
+  const persist = () => { allocCache = null; try { localStorage.setItem(KEY, JSON.stringify(store)); } catch {} };
+  const E = makeEngine(DATA, store);
+  const { key, fromKey, bitsOf, popcnt, topBit, isOne, matchesLoose, preSet, preimage, lowOf, payOf, priceOrder, targetSets, findRoutes, overOf, usesOver, capWild, redundant, walk } = E;
+  const compile = (ci = catIdx) => E.compile(ci);
+
+  const EXAMPLES = {
+    "Głowa": [
+      { p: "utwardzony", b: "czapka", s: "podroznika", n: 1 },
+      { p: "wzmocniony", b: "kask", s: "przezornosci", n: 1 },
+      { p: "pomocny", b: "helm", s: "wytrzymalosci", n: 1 },
+      { p: "ozdobny", b: "maska", s: "", n: 1 },
+      { p: "elegancki", b: "obrecz", s: "pasterza", n: 2 },
+      { p: "utwardzony", b: "kask", s: "podroznika", n: 1 },
+    ],
+  };
+
+  let catIdx = Math.min(store.cat || 0, DATA.length - 1);
+  const cat = () => DATA[catIdx];
+  const slot = (ci = catIdx) => {
+    const n = DATA[ci].name;
+    if (!store[n]) store[n] = { inv: (EXAMPLES[n] || []).map(x => ({ ...x })), example: !!EXAMPLES[n], target: null, plans: [] };
+    if (!store[n].plans) store[n].plans = [];
+    return store[n];
+  };
+
+
+  // ---- rendering helpers ----
+  // Polish plural forms: 1 przedmiot, 2-4 przedmioty, 5+ przedmiotów
+  const pl = (n, one, few, many) => { const a = Math.abs(n) % 100, b = a % 10; return n === 1 ? one : (b >= 2 && b <= 4 && !(a >= 12 && a <= 14)) ? few : many; };
+  const N = (n, one, few, many) => `${n} ${pl(n, one, few, many)}`;
+  const PRZ = n => N(n, "przedmiot", "przedmioty", "przedmiotów");
+  const POL = n => N(n, "połączenie", "połączenia", "połączeń");
+  // display names for categories (saved data keeps the sheet names)
+  const CAT_LABEL = { "Spodnie": "Gacie", "Pierścienie": "Paluchy", "Amulety": "Szyja", "Dystansowa": "Dystans" };
+  const catName = ci => CAT_LABEL[DATA[ci].name] || DATA[ci].name;
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  // item name with each part's tier (its position in the sheet) in small print: krwawy¹² bandana⁹ krwi¹¹
+  const tierSup = v => v > 0 ? `<sup class="tier">${v}</sup>` : "";
+  const itemHTML = (it, ci = catIdx) => { const C = compile(ci);
+    return `<span class="item">${it.l ? '<span class="leg">Legendarny</span>' : ""}${it.p ? `<span class="p">${esc(it.p)}</span>${tierSup(C.idxP(it))} ` : ""}<span class="b">${esc(it.b)}</span>${tierSup(C.idxB(it) + 1)}${it.s ? ` <span class="s">${esc(it.s)}</span>${tierSup(C.idxS(it))}` : ""}</span>`; };
+  const itemText = it => [it.l ? "legendarny" : "", it.p, it.b, it.s].filter(Boolean).join(" ");
+  const listNames = (names, max = 4) => names.length <= max ? names.join(", ").replace(/, ([^,]*)$/, " lub $1") : `${names.slice(0, max - 1).join(", ")} lub ${names.length - max + 1} innych`;
+  // Describes a missing item in its loosest form: only what the route really needs is fixed.
+  // Each name carries its tier: in small print on the page (html), in brackets in plain text.
+  function looseText(C, L, html) {
+    const nm = (name, tier) => html ? esc(name) + tierSup(tier) : `${name} (${tier})`;
+    const part = (mask, names, word, gen, hasTable) => {
+      if (!hasTable) return null;
+      const vals = bitsOf(mask), withNone = vals.includes(0), real = vals.filter(v => v > 0).map(v => nm(names[v - 1], v));
+      if (real.length === names.length) return withNone ? `dowolny ${word} lub bez` : `dowolny ${word}`;
+      if (!real.length) return `bez ${gen}`;
+      return (withNone ? `bez ${gen} lub ` : word + " ") + listNames(real);
+    };
+    const bases = bitsOf(L.b).map(v => nm(C.B[v], v + 1));
+    const out = [];
+    if (L.l === 2) out.push("legendarny"); else if (L.l === 1) out.push("zwykły");
+    const p = part(L.p, C.P, "prefiks", "prefiksu", C.hasP); if (p) out.push(p);
+    out.push(bases.length === C.NB ? "dowolna baza" : "baza " + listNames(bases));
+    const s = part(L.s, C.S, "sufiks", "sufiksu", C.hasS); if (s) out.push(s);
+    return out.join(" · ");
+  }
+  const looseHTML = (C, L) => looseText(C, L, true);
+
+  function picker(el, opts) {
+    const C = compile();
+    const sel = (kind, label, list, first) => {
+      const id = `${opts.idPrefix}-${kind}`;
+      return `<label class="f" for="${id}">${label}<select id="${id}" data-kind="${kind}">${first}${list.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("")}</select></label>`;
+    };
+    const affixFirst = opts.mode === "target" ? `<option value="*">Dowolny lub brak</option><option value="+">Dowolny</option><option value="">Brak</option>` : `<option value="">Brak</option>`;
+    const baseFirst = opts.mode === "target" ? `<option value="*">Dowolna</option>` : "";
+    let html = "";
+    html += C.hasP ? sel("p", "Prefiks", C.P, affixFirst) : `<label class="f">Prefiks<select disabled><option>Brak w tej kategorii</option></select></label>`;
+    html += sel("b", "Baza", C.B, baseFirst);
+    html += C.hasS ? sel("s", "Sufiks", C.S, affixFirst) : `<label class="f">Sufiks<select disabled><option>Brak w tej kategorii</option></select></label>`;
+    html += `<label class="f" for="${opts.idPrefix}-l">Legendarny<select id="${opts.idPrefix}-l" data-kind="l">${opts.mode === "target" ? '<option value="*">Obojętnie</option><option value="1">Tak</option><option value="0">Nie</option>' : '<option value="0">Nie</option><option value="1">Tak</option>'}</select></label>`;
+    if (opts.qty) html += `<label class="f" for="${opts.idPrefix}-n">Ilość<input id="${opts.idPrefix}-n" type="number" min="1" max="99" value="1"></label>`;
+    el.innerHTML = html;
+  }
+  const read = el => {
+    const v = k => { const s = el.querySelector(`[data-kind="${k}"]`); return s ? s.value : ""; };
+    return { p: v("p"), b: v("b"), s: v("s"), l: v("l") };
+  };
+
+  // ---- locks and plans: which copies are free to use ----
+  function alloc(ci = catIdx) {
+    if (allocCache && allocCache.ci === ci) return allocCache.A;
+    const s = slot(ci), C = compile(ci);
+    const avail = new Map();
+    for (const e of s.inv) {
+      const k = key(e);
+      avail.set(k, (avail.get(k) || 0) + e.n - Math.min(e.lock || 0, e.n));
+    }
+    const auc = new Map();
+    for (const e of (s.auction || [])) { const k = key(e); auc.set(k, (auc.get(k) || 0) + e.n); }
+    const reserved = new Map(), aucReserved = new Map(), status = [];
+    const take = k => { avail.set(k, avail.get(k) - 1); reserved.set(k, (reserved.get(k) || 0) + 1); };
+    const takeAuc = k => { auc.set(k, auc.get(k) - 1); aucReserved.set(k, (aucReserved.get(k) || 0) + 1); };
+    for (const plan of s.plans) {
+      // an unlocked plan stays on the list but reserves nothing
+      if (plan.off) { status.push({ state: "off", found: [] }); continue; }
+      // auction leaves can be covered by the auction list or, once bought, by your inventory
+      const need = new Map(), needAuc = new Map();
+      for (const [k, c, src] of plan.leaves) (src === "a" ? needAuc : need).set(k, ((src === "a" ? needAuc : need).get(k) || 0) + c);
+      const ok = [...need].every(([k, c]) => (avail.get(k) || 0) >= c) &&
+        [...needAuc].every(([k, c]) => (auc.get(k) || 0) + Math.max(0, (avail.get(k) || 0) - (need.get(k) || 0)) >= c);
+      if (!ok) { status.push({ state: "broken", found: [] }); continue; }
+      need.forEach((c, k) => { for (let i = 0; i < c; i++) take(k); });
+      let toBuy = 0;
+      needAuc.forEach((c, k) => { for (let i = 0; i < c; i++) { if ((auc.get(k) || 0) > 0) { takeAuc(k); toBuy++; } else take(k); } });
+      const found = plan.missing.map(m => {
+        for (const [k, c] of avail) if (c > 0 && matchesLoose(C, fromKey(k), m.loose)) { take(k); return k; }
+        return null;
+      });
+      status.push({ state: !found.every(Boolean) ? "waiting" : toBuy ? "buy" : "ready", found, toBuy });
+    }
+    const A = { avail, reserved, status, auc, aucReserved };
+    allocCache = { ci, A };
+    return A;
+  }
+  const tooDear = x => store.cash != null && payOf(x) > store.cash;
+  // auction listings, one entry per copy, cheapest first; plans reserve the cheapest copies
+  function aucCopies(ci = catIdx) {
+    const by = new Map();
+    for (const e of (slot(ci).auction || [])) {
+      const k = key(e); if (!by.has(k)) by.set(k, []);
+      for (let i = 0; i < e.n; i++) by.get(k).push({ price: e.price ?? null, pk: e.price == null ? "none" : e.pk || "manual" });
+    }
+    for (const l of by.values()) l.sort(priceOrder);
+    return by;
+  }
+  function freeAuction(ci = catIdx) {
+    const { aucReserved } = alloc(ci), out = [];
+    for (const [k, copies] of aucCopies(ci)) {
+      for (const c of copies.slice(aucReserved.get(k) || 0)) {
+        if (store.affordOnly && tooDear(c)) continue;
+        out.push({ ...fromKey(k), src: "auction", price: c.price, pk: c.pk });
+      }
+    }
+    return out;
+  }
+  // gives each auction item in a route the cheapest free listing of that item
+  function assignPrices(tree, units) {
+    const pool = new Map();
+    for (const u of units) if (u.src) { const k = key(u); if (!pool.has(k)) pool.set(k, []); pool.get(k).push(u); }
+    for (const l of pool.values()) l.sort(priceOrder);
+    walk(tree, t => { if (t.auction) { const c = (pool.get(key(t.it)) || []).shift(); t.price = c ? c.price : null; t.pk = c ? c.pk : "none"; } });
+  }
+  const fmt = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");
+  const priceText = (price, pk) => price == null ? "brak · 1" : pk === "bid" ? `oferta ${fmt(price)} → ${fmt(payOf({ price, pk }))}` : `${pk === "min" ? "min. " : ""}${fmt(price)}`;
+  // total auction cost, and how it compares with your cash
+  const aucTotalHTML = sum => `<div class="note aucsum">Aukcja razem: <b>${fmt(sum)} kk</b>.${store.cash == null ? "" : sum > store.cash ? ` <span class="bad">Brakuje ci ${fmt(sum - store.cash)} kk.</span>` : ` <span class="good">Masz ${fmt(store.cash)} kk, wystarczy.</span>`}</div>`;
+  function aucSummary(tree) {
+    let sum = 0, n = 0;
+    walk(tree, t => { if (t.auction) { n++; sum += payOf(t); } });
+    return n ? aucTotalHTML(sum) : "";
+  }
+  function freeUnits(ci = catIdx) {
+    const { avail } = alloc(ci), out = [];
+    for (const [k, c] of avail) for (let i = 0; i < c; i++) out.push(fromKey(k));
+    return out;
+  }
+  function invAdd(s, it, n = 1) {
+    const ex = s.inv.find(x => key(x) === key(it));
+    if (ex) ex.n += n; else s.inv.push({ p: it.p, b: it.b, s: it.s, l: !!it.l, n, lock: 0 });
+  }
+  function invRemove(s, k, n = 1) {
+    const i = s.inv.findIndex(x => key(x) === k); if (i < 0) return;
+    const e = s.inv[i]; e.n -= n;
+    if (e.n <= 0) s.inv.splice(i, 1); else if ((e.lock || 0) > e.n) e.lock = e.n;
+  }
+
+  // the target in words: "legendarny · krwawy · bandana · dowolny sufiks"
+  function targetDesc(C, t) {
+    const aff = (v, w, g) => v === "*" ? `dowolny ${w} lub bez` : v === "+" ? `dowolny ${w}` : v || `bez ${g}`;
+    return [t.l === "1" ? "legendarny" : t.l === "0" ? "zwykły" : "", C.hasP ? aff(t.p, "prefiks", "prefiksu") : "", t.b === "*" ? "dowolna baza" : t.b, C.hasS ? aff(t.s, "sufiks", "sufiksu") : ""].filter(Boolean).join(" · ");
+  }
+
+  // ---- route tree drawing ----
+  function treeHTML(root, sel) {
+    const W = 200, H = 80, GX = 46, GY = 12;
+    let row = 0, maxD = 0;
+    const pos = new Map();
+    (function place(t, d) {
+      maxD = Math.max(maxD, d);
+      if (t.kids) { t.kids.forEach(k => place(k, d + 1)); pos.set(t, { d, y: (pos.get(t.kids[0]).y + pos.get(t.kids[1]).y) / 2 }); }
+      else pos.set(t, { d, y: row++ });
+    })(root, 0);
+    const X = t => (maxD - pos.get(t).d) * (W + GX), Y = t => pos.get(t).y * (H + GY);
+    const width = (maxD + 1) * (W + GX) - GX, height = row * (H + GY) - GY;
+    let lines = "", cards = "";
+    walk(root, t => {
+      if (t.kids) for (const k of t.kids) {
+        const x1 = X(k) + W, y1 = Y(k) + H / 2, x2 = X(t), y2 = Y(t) + H / 2, mx = x1 + GX / 2;
+        lines += `<path d="M${x1} ${y1}H${mx}V${y2}H${x2}" />`;
+      }
+      const dear = t.auction && tooDear(t);
+      // auction cards show what buying costs; the bid or minimum behind it is in the tooltip and the shopping list
+      const label = t.bad ? "Nie pasuje" : t.wild ? "Brakuje" : t.auction ? (dear ? `Za drogo · ${fmt(payOf(t))}\u00a0kk` : t.price == null ? "Aukcja · brak (1\u00a0kk)" : `Aukcja · ${fmt(payOf(t))}\u00a0kk`) : t.leaf ? "Posiadany" : t === root ? `Krok ${t.step} · wynik` : `Krok ${t.step}`;
+      cards += `<div class="tcard${t.leaf ? " leaf" : ""}${t.wild ? " missing" : t.auction ? " auction" : t.leaf ? " owned" : ""}${dear ? " dear" : ""}${t === root ? " root" : ""}${t.bad ? " bad" : ""}${t.mid !== undefined ? ` editable${t.mid === sel ? " sel" : ""}` : ""}" style="left:${X(t)}px;top:${Y(t)}px;width:${W}px;height:${H}px"${t.mid !== undefined ? ` data-mid="${t.mid}" role="button" tabindex="0" aria-label="Edytuj ten element"` : ""}${t.kids && t.step ? ` data-step="${t.step}"` : ""}${t.wild && t.looseText ? ` title="Szukaj: ${esc(t.looseText)}"` : t.auction ? ` title="Aukcja · ${esc(priceText(t.price, t.pk))}"` : ""}>
+        <span class="tlabel">${label}</span>${itemHTML(t.it)}</div>`;
+    });
+    return `<div class="tree-scroll"><div class="tree" style="width:${width}px;height:${height}px">
+      <svg class="tlines" width="${width}" height="${height}" aria-hidden="true">${lines}</svg>${cards}</div></div>`;
+  }
+  function stepsHTML(root, track) {
+    const steps = []; walk(root, t => { if (t.kids) steps.push(t); });
+    const side = k => `<div>${itemHTML(k.it)}${k.wild ? '<span class="tag miss">brakuje</span>' : k.auction ? `<span class="tag auc${tooDear(k) ? " dear" : ""}">aukcja · ${priceText(k.price, k.pk)}</span>` : k.leaf ? "" : `<span class="tag">z kroku ${k.step}</span>`}</div>`;
+    return `<ol class="steps${track ? " track" : ""}">${steps.map(s => `<li class="${s === root ? "final" : ""}" data-step="${s.step}"><div class="combo">
+      ${side(s.kids[0])}<div class="plus">+</div>${side(s.kids[1])}<div class="arrow">daje</div><div>${itemHTML(s.it)}</div></div>${track ? `<label class="donechk"><input type="checkbox" data-done="${s.step}"> Zrobione</label>` : ""}</li>`).join("")}</ol>`;
+  }
+  // Crafting progress: tick steps as you do them in the game. Done steps are dimmed in the list
+  // and the tree, the next one to do is highlighted.
+  function hookSteps(el, done, onChange) {
+    const paint = () => {
+      const lis = [...el.querySelectorAll("ol.steps.track li")];
+      let next = null;
+      for (const li of lis) {
+        const n = +li.dataset.step, d = done.has(n);
+        li.classList.toggle("done", d);
+        const cb = li.querySelector("[data-done]"); if (cb) cb.checked = d;
+        if (!d && !next) next = li;
+        li.classList.toggle("next", li === next);
+      }
+      el.querySelectorAll(".tcard[data-step]").forEach(c => c.classList.toggle("done", done.has(+c.dataset.step)));
+      const pr = el.querySelector(".progress");
+      if (pr) pr.textContent = lis.length ? `Postęp: ${done.size} z ${lis.length} ${pl(lis.length, "kroku", "kroków", "kroków")}${done.size === lis.length ? " · wszystko połączone" : ""}` : "";
+    };
+    el.querySelectorAll("[data-done]").forEach(cb => cb.onchange = () => { const n = +cb.dataset.done; if (cb.checked) done.add(n); else done.delete(n); paint(); onChange && onChange(done); });
+    paint();
+  }
+  // shopping list rows: an auction item to buy, a missing item to find (with what fits)
+  const aucLi = a => `<li class="auc${tooDear(a) ? " dear" : ""}"><div>${itemHTML(a.it)}<span class="tag auc${tooDear(a) ? " dear" : ""}">aukcja · ${priceText(a.price, a.pk)}${tooDear(a) ? " · za drogo" : ""}</span></div></li>`;
+  const lookFor = m => m.loose ? looseHTML(compile(), m.loose) : esc(m.looseText || "");
+  const missLi = m => `<li><div>${itemHTML(m.it)}<span class="tag miss">brakuje</span></div><div class="note">Szukaj: ${lookFor(m)}</div></li>`;
+  // shopping list: missing items to find and auction items to buy, with the auction total
+  function shopHTML(tree) {
+    const miss = [], aucs = []; walk(tree, t => { if (t.wild) miss.push(t); else if (t.auction) aucs.push(t); });
+    if (!miss.length && !aucs.length) return "";
+    return `<h3 class="sub-h">Lista zakupów</h3>
+      <ul class="shop">${aucs.map(aucLi).join("")}${miss.map(missLi).join("")}</ul>
+      ${aucSummary(tree)}`;
+  }
+  // full route view: shopping list, tree, steps, items used
+  // phone layout (matches the stylesheet's 700 px breakpoint)
+  const narrow = () => matchMedia("(max-width: 700px)").matches;
+  function routeBody(tree, opts = {}) {
+    const owned = []; walk(tree, t => { if (t.leaf && !t.wild && !t.auction) owned.push(t); });
+    return `${shopHTML(tree)}
+      ${tree.kids && !opts.noTree ? `<details class="treebox"${narrow() ? "" : " open"}><summary class="sub-h">Drzewo łączenia</summary>${treeHTML(tree)}</details>` : ""}${tree.kids ? `<h3 class="sub-h">Krok po kroku${opts.track ? ' <span class="progress note"></span>' : ""}</h3>${stepsHTML(tree, opts.track)}` : ""}
+      ${owned.length ? `<div class="note">${opts.usedLabel || "Zużyte przedmioty"}:</div><div class="used">${owned.map(u => `<span class="chip own">${itemHTML(u.it)}</span>`).join("")}</div>` : ""}`;
+  }
+  const serTree = (C, t) => {
+    const o = { it: t.it };
+    if (t.leaf) o.leaf = true;
+    if (t.auction) { o.auction = true; o.price = t.price; o.pk = t.pk; }
+    if (t.wild) { o.wild = true; o.loose = t.loose; o.looseText = looseText(C, t.loose); }
+    if (t.kids) { o.kids = t.kids.map(k => serTree(C, k)); o.step = t.step; }
+    return o;
+  };
+
+  // ---- auction items ----
+  function cheapestListing(s, k) { let best = -1; (s.auction || []).forEach((x, i) => { if (key(x) === k && (best < 0 || priceOrder(x, s.auction[best]) < 0)) best = i; }); return best; }
+  function aucTake(s, i) { const x = s.auction[i]; x.n -= 1; if (x.n <= 0) s.auction.splice(i, 1); }
+  // each listing is its own entry; pasting the same listing again (same item and end time)
+  // updates its price instead of adding a copy
+  function aucAdd(s, it, x = {}) {
+    s.auction ||= [];
+    const e = { p: it.p, b: it.b, s: it.s, l: !!it.l, n: 1, price: x.price ?? null, pk: x.price == null ? "none" : x.pk, end: x.end || "" };
+    const ex = e.end && s.auction.find(y => y.end === e.end && key(y) === key(e));
+    if (ex) { ex.price = e.price; ex.pk = e.pk; return false; }
+    s.auction.push(e); return true;
+  }
+  // Reads the auction list page. Each listing: item line, then "<bids><TAB>", then the highest bid
+  // (if there are bids) or "- brak -" with an optional "(Cena min: …)", then the end date and time.
+  // Numbers in brackets "( 1 / 0 / … )" are ignored. Items without that block (the page's filter
+  // menu) are skipped.
+  function parseAuction(text) {
+    const lines = text.split(/\r?\n/), out = [];
+    const num = v => +String(v).replace(/\D/g, "");
+    let cur = null;
+    const close = () => { if (cur && cur.bids !== null) out.push(cur); cur = null; };
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i], ln = raw.trim();
+      if (cur && cur.bids === null) {
+        const m = raw.match(/^\s*(\d+)\s*(\t|-|$)/);
+        if (m && !/^\s*\d{4}-/.test(raw)) { cur.bids = +m[1]; const d = raw.match(/\d{4}-\d\d-\d\d/); if (d) cur.date = d[0]; continue; }
+        cur = null;
+      }
+      const r = ln ? parsePaste(ln.replace(/^aukcja obserwowana\s*/i, "")) : { total: 0 };
+      if (r.total === 1) {
+        close();
+        const [ci, g] = [...r.found][0];
+        cur = { ci, item: [...g.values()][0].item, bids: null, price: null, pk: "none", date: "" };
+        continue;
+      }
+      if (!cur || cur.bids === null) continue;
+      let m;
+      if ((m = ln.match(/^\(\s*cena min:\s*([\d\s\u00a0]+)\)/i))) { cur.price = num(m[1]); cur.pk = "min"; continue; }
+      if (cur.bids > 0 && cur.price === null && /^[\d\s\u00a0]+$/.test(ln)) { cur.price = num(ln); cur.pk = "bid"; continue; }
+      if ((m = ln.match(/^\d{4}-\d\d-\d\d/))) { cur.date = m[0]; continue; }
+      if ((m = ln.match(/^(\d\d:\d\d:\d\d)/))) { cur.end = `${cur.date} ${m[1]}`; close(); }
+    }
+    close();
+    return { listings: out };
+  }
+  function renderAuction() {
+    const s = slot(), list = s.auction || [], A = alloc();
+    if (document.activeElement !== $("cashIn")) $("cashIn").value = store.cash == null ? "" : fmt(store.cash);
+    const total = list.reduce((a, x) => a + x.n, 0);
+    $("aucCount").textContent = total || "";
+    const el = $("aucList");
+    if (!list.length) { el.innerHTML = `<li class="empty">Brak przedmiotów z aukcji w kategorii ${esc(catName(catIdx))}. Wklej to, co widzisz na aukcji, a szukanie ścieżki je uwzględni.</li>`; return; }
+    // plans reserve the cheapest copies of each item
+    const resLeft = new Map(A.aucReserved);
+    const order = list.map((x, i) => i).sort((a, b) => key(list[a]) < key(list[b]) ? -1 : key(list[a]) > key(list[b]) ? 1 : priceOrder(list[a], list[b]));
+    const inPlan = new Map();
+    for (const i of order) { const k = key(list[i]), r = resLeft.get(k) || 0; if (r > 0) { const t = Math.min(r, list[i].n); inPlan.set(i, t); resLeft.set(k, r - t); } }
+    el.innerHTML = list.map((x, i) => {
+      const rs = inPlan.get(i) || 0, price = x.price ?? null, dear = tooDear(x);
+      const hidden = dear && store.affordOnly;
+      return `<li class="${dear ? "dear" : ""}${hidden ? " skipped" : ""}"><div class="inv-name">${itemHTML(x)}${x.n > 1 ? `<span class="pill">×${x.n}</span>` : ""}${rs ? `<span class="pill plan">W planie ${rs}</span>` : ""}${dear ? `<span class="pill bad">${hidden ? "pomijany" : "za drogo"}</span>` : ""}</div>
+        <label class="price" title="${x.pk === "bid" ? `Najwyższa oferta; przebicie o 5% kosztuje ${fmt(payOf(x))} kk` : x.pk === "min" ? "Cena minimalna" : price == null ? "Brak oferty i ceny minimalnej" : "Cena wpisana ręcznie"}"><span>${x.pk === "bid" ? "oferta" : x.pk === "min" ? "min." : price == null ? "" : "cena"}</span><input data-price="${i}" inputmode="numeric" value="${price == null ? "" : fmt(price)}" placeholder="brak" aria-label="Cena">${x.pk === "bid" && price != null ? `<span class="pay">→ ${fmt(payOf(x))}</span>` : ""}</label>
+        <button class="btn small" data-bought="${i}" title="Przenosi do ekwipunku i odejmuje cenę od kasy">Kupione</button>
+        <button class="btn small ghost" data-lost="${i}" title="Usuwa jeden z listy">Utracone</button></li>`;
+    }).join("");
+    el.querySelectorAll("[data-bought]").forEach(b => b.onclick = () => {
+      const i = +b.dataset.bought, x = list[i]; invAdd(s, x);
+      if (store.cash != null) store.cash = Math.max(0, store.cash - payOf(x));
+      aucTake(s, i); s.example = false;
+      persist(); refresh();
+    });
+    el.querySelectorAll("[data-lost]").forEach(b => b.onclick = () => { aucTake(s, +b.dataset.lost); persist(); refresh(); });
+    el.querySelectorAll("[data-price]").forEach(inp => inp.onchange = () => {
+      const x = list[+inp.dataset.price], v = inp.value.replace(/\D/g, "");
+      x.price = v === "" ? null : +v; x.pk = v === "" ? "none" : "manual";
+      persist(); refresh();
+    });
+  }
+  $("cashIn").onchange = () => { const v = $("cashIn").value.replace(/\D/g, ""); store.cash = v === "" ? null : +v; persist(); refresh(); };
+  // auction page pasted in the bar: listings are added, or their prices updated
+  function readAuctionPaste(text) {
+    const listings = parseAuction(text).listings;
+    // plain item names without the auction page around them: added with price "brak"
+    if (!listings.length) { const r = parsePaste(text); for (const [ci, g] of r.found) for (const { item, n } of g.values()) for (let i = 0; i < n; i++) listings.push({ ci, item, price: null, pk: "none" }); }
+    if (!listings.length) { $("aucOut").innerHTML = `<div class="verdict bad">Nie rozpoznano żadnych przedmiotów w tym tekście.</div>`; return; }
+    let added = 0, updated = 0; const cats = new Set();
+    for (const x of listings) { cats.add(x.ci); if (aucAdd(slot(x.ci), x.item, x)) added++; else updated++; }
+    persist();
+    const names = [...cats].map(ci => catName(ci)).join(", ");
+    const parts = [added ? `Dodano ${PRZ(added)}` : "", updated ? `zaktualizowano ceny ${updated}` : ""].filter(Boolean).join(", ");
+    $("aucOut").innerHTML = `<div class="verdict ok">${parts.charAt(0).toUpperCase() + parts.slice(1)}${names ? ` (${esc(names)})` : ""}.</div>`;
+    refresh();
+  }
+  // clearing asks for confirmation inside the page
+  const askClear = (label, run) => {
+    $("aucConfirm").innerHTML = `<span class="note">${label}</span><button class="btn small primary" id="aucYes">Tak, wyczyść</button><button class="btn small ghost" id="aucNo">Anuluj</button>`;
+    $("aucConfirm").hidden = false;
+    $("aucYes").onclick = () => { run(); $("aucConfirm").hidden = true; persist(); refresh(); };
+    $("aucNo").onclick = () => { $("aucConfirm").hidden = true; };
+  };
+  $("aucClear").onclick = () => askClear(`Usunąć wszystkie przedmioty z aukcji w kategorii ${esc(catName(catIdx))}?`, () => { slot().auction = []; });
+  $("aucClearAll").onclick = () => askClear("Usunąć przedmioty z aukcji we wszystkich kategoriach?", () => { DATA.forEach((_, ci) => { slot(ci).auction = []; }); });
+
+  // ---- tabs ----
+  function renderTabs() {
+    $("tabs").innerHTML = DATA.map((c, i) => `<button role="tab" id="tab-${i}" aria-selected="${i === catIdx}">${esc(catName(i))}</button>`).join("");
+    $("tabs").querySelectorAll("button").forEach((b, i) => b.onclick = () => { catIdx = i; store.cat = i; persist(); renderAll(); });
+  }
+
+  // ---- inventory ----
+  let invQuery = ""; // the inventory search box (not saved)
+  function renderInv() {
+    const s = slot(), C = compile();
+    const A = alloc();
+    const total = s.inv.reduce((a, x) => a + x.n, 0);
+    let free = 0; for (const c of A.avail.values()) free += c;
+    $("invCount").textContent = total ? `${total}${free !== total ? ` · ${free} ${pl(free, "wolny", "wolne", "wolnych")}` : ""}` : "";
+    $("exampleFlag").hidden = !s.example || !s.inv.length;
+    const list = $("invList");
+    const rar = store.rarity || "all", grp = store.group || "none";
+    $("rarSeg").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === rar));
+    $("grpSeg").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === grp));
+    $("grpSeg").querySelectorAll("button").forEach(b => b.hidden = (b.dataset.v.includes("p") && !C.hasP) || (b.dataset.v.includes("s") && !C.hasS));
+    const grpOk = { none: true, p: C.hasP, s: C.hasS, ps: C.hasP && C.hasS }[grp];
+    const affixOk = x => !grpOk || grp === "none" || (grp === "p" ? x.p && !x.s : grp === "s" ? x.s && !x.p : x.p && x.s);
+    if (!s.inv.length) { list.innerHTML = `<li class="empty">Brak przedmiotów w kategorii ${esc(catName(catIdx))}. Wklej je z gry albo wybierz części powyżej.</li>`; return; }
+    // search: every word typed must appear in the name; sort: highest tiers first (ties: the other tiers, then the name)
+    const words = invQuery.toLowerCase().split(/\s+/).filter(Boolean);
+    const hit = x => { const t = itemText(x).toLowerCase(); return words.every(w => t.includes(w)); };
+    const sort = store.invSort || "added";
+    $("invSort").value = sort;
+    const tiers = x => ({ p: C.idxP(x), s: C.idxS(x), b: C.idxB(x) + 1 });
+    const keyOf = { sum: t => [t.p + t.s, t.b], p: t => [t.p, t.s, t.b], s: t => [t.s, t.p, t.b], b: t => [t.b, t.p + t.s] }[sort];
+    const rows = s.inv.map((x, i) => ({ x, i })).filter(({ x }) => (rar === "all" || (rar === "legendary") === !!x.l) && affixOk(x) && hit(x));
+    if (keyOf) rows.sort((a, b) => { const ka = keyOf(tiers(a.x)), kb = keyOf(tiers(b.x)); for (let j = 0; j < ka.length; j++) if (ka[j] !== kb[j]) return kb[j] - ka[j]; return itemText(a.x) < itemText(b.x) ? -1 : 1; });
+    else if (sort === "name") rows.sort((a, b) => [a.x.b, a.x.p, a.x.s].join(" ") < [b.x.b, b.x.p, b.x.s].join(" ") ? -1 : 1);
+    if (!rows.length) { list.innerHTML = `<li class="empty">${words.length ? `Nic nie pasuje do „${esc(invQuery.trim())}”.` : "Żaden przedmiot nie pasuje do filtrów."}</li>`; return; }
+    list.innerHTML = rows.map(({ x, i }) => {
+      const lk = Math.min(x.lock || 0, x.n), rs = A.reserved.get(key(x)) || 0;
+      const lockLabel = !lk ? "Zablokuj" : x.n === 1 ? "Zablokowany" : `Zablokowane ${lk}/${x.n}`;
+      return `<li class="${lk === x.n ? "is-locked" : ""}">
+        <div class="inv-name">${itemHTML(x)}${rs ? `<span class="pill plan">W planie ${rs}</span>` : ""}</div>
+        <button class="lockbtn${lk ? " on" : ""}" data-lock="${i}" aria-pressed="${lk > 0}" title="Zablokowanych przedmiotów nic nie użyje">${lockLabel}</button>
+        <span class="qty"><button data-i="${i}" data-d="-1" aria-label="Jeden mniej">−</button><span>${x.n}</span><button data-i="${i}" data-d="1" aria-label="Jeden więcej">+</button></span>
+        <button class="x" data-del="${i}" aria-label="Usuń">×</button></li>`;
+    }).join("");
+    list.querySelectorAll("[data-d]").forEach(b => b.onclick = () => {
+      const x = s.inv[+b.dataset.i]; x.n = Math.max(0, x.n + +b.dataset.d);
+      if (!x.n) s.inv.splice(+b.dataset.i, 1); else if ((x.lock || 0) > x.n) x.lock = x.n;
+      s.example = false; persist(); refresh();
+    });
+    list.querySelectorAll("[data-lock]").forEach(b => b.onclick = () => {
+      const x = s.inv[+b.dataset.lock]; x.lock = ((x.lock || 0) + 1) % (x.n + 1); s.example = false;
+      persist(); refresh();
+    });
+    list.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { s.inv.splice(+b.dataset.del, 1); persist(); refresh(); });
+  }
+  $("invSearch").oninput = () => { invQuery = $("invSearch").value; renderInv(); };
+  $("invSort").onchange = () => { store.invSort = $("invSort").value; persist(); renderInv(); };
+  $("rarSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.rarity = b.dataset.v; persist(); renderInv(); };
+  $("grpSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.group = b.dataset.v; persist(); renderInv(); };
+  $("addBtn").onclick = () => {
+    const s = slot(); const raw = read($("addPicker"));
+    if (s.example) { s.inv = []; s.example = false; }
+    const n = Math.min(99, Math.max(1, parseInt($("add-n").value) || 1));
+    invAdd(s, { p: raw.p, b: raw.b, s: raw.s, l: raw.l === "1" }, n);
+    persist(); refresh();
+  };
+  $("clearInv").onclick = () => { const s = slot(); s.inv = []; s.example = false; persist(); refresh(); $("result").innerHTML = ""; };
+
+  // ---- paste parser ----
+  // Finds item names anywhere in pasted text. A base name anchors each item; the word right
+  // before it is checked as a prefix (any gender ending), the words after it as a suffix.
+  // Everything that doesn't line up with the sheet's names is ignored.
+  const normTxt = s => s.toLowerCase().replace(/ł/g, "l").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const words = s => normTxt(s).match(/[a-z0-9]+(?:-[a-z0-9]+)*/g) || [];
+  const stem = w => w.replace(/(ego|ej|ie|ia|y|i|a|e|o)$/, "");
+  const near = (a, b) => { // edit distance <= 1, only for longer words, to absorb typos
+    if (a === b) return true;
+    if (Math.min(a.length, b.length) < 6 || Math.abs(a.length - b.length) > 1) return false;
+    let i = 0, j = 0, d = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) { i++; j++; continue; }
+      if (++d > 1) return false;
+      if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+    }
+    return d + (a.length - i) + (b.length - j) <= 1;
+  };
+  const patTokens = part => part.split(/\s+/).map(t => t.endsWith(".") ? { w: t.slice(0, -1), abbr: true } : { w: t, abbr: false });
+  const tokMatch = (word, p) => p.abbr ? word.startsWith(p.w) : near(word, p.w);
+  const INDEX = (() => {
+    const bases = [];
+    DATA.forEach((c, ci) => c.tables.base.parts.forEach(part => bases.push({ ci, part, toks: patTokens(part) })));
+    bases.sort((a, b) => b.toks.length - a.toks.length);
+    const per = DATA.map(c => ({
+      prefixes: c.tables.prefix ? c.tables.prefix.parts.map(part => ({ part, st: stem(part) })) : [],
+      suffixes: c.tables.suffix ? c.tables.suffix.parts.map(part => ({ part, toks: patTokens(part) })).sort((a, b) => b.toks.length - a.toks.length) : [],
+    }));
+    return { bases, per };
+  })();
+  const matchAt = (toks, i, pat) => pat.toks.length <= toks.length - i && pat.toks.every((p, k) => tokMatch(toks[i + k], p));
+
+  function parsePaste(text) {
+    const found = new Map(); // ci -> Map(key -> {item, n})
+    let total = 0;
+    for (const line of text.split(/\r?\n/)) {
+      const toks = words(line);
+      let i = 0, lastEnd = 0;
+      while (i < toks.length) {
+        const base = INDEX.bases.find(b => matchAt(toks, i, b));
+        if (!base) { i++; continue; }
+        const per = INDEX.per[base.ci];
+        // "Legendarny/-a/-e" anywhere between the previous item and this one marks it legendary
+        let l = false;
+        for (let k = Math.max(lastEnd, i - 3); k < i; k++) if (/^legendarn/.test(toks[k])) l = true;
+        let pj = i - 1;
+        if (pj >= lastEnd && /^legendarn/.test(toks[pj] || "")) pj--;
+        let p = "";
+        if (pj >= lastEnd && per.prefixes.length) {
+          const st = stem(toks[pj]);
+          const hit = per.prefixes.find(x => x.st === st) || per.prefixes.find(x => near(st, x.st));
+          if (hit) p = hit.part;
+        }
+        let j = i + base.toks.length, s = "";
+        const suf = per.suffixes.find(x => matchAt(toks, j, x));
+        if (suf) { s = suf.part; j += suf.toks.length; }
+        const item = { p, b: base.part, s, l };
+        if (!found.has(base.ci)) found.set(base.ci, new Map());
+        const g = found.get(base.ci), k = key(item);
+        g.set(k, { item, n: (g.get(k)?.n || 0) + 1 });
+        total++;
+        i = j; lastEnd = j;
+      }
+    }
+    return { found, total };
+  }
+
+  // inventory pasted in the bar: shows what was found, then replaces or adds
+  function readInventoryPaste(text) {
+    const out = $("pasteOut");
+    const r = parsePaste(text);
+    if (!r.total) { out.innerHTML = `<div class="verdict bad">Nie rozpoznano przedmiotów. Sprawdź, czy skopiowany tekst zawiera ich nazwy.</div>`; return; }
+    const groups = [...r.found.entries()].sort((a, b) => a[0] - b[0]).map(([ci, g]) => `
+      <div class="found-group"><h3>${esc(catName(ci))}</h3><ul>${[...g.values()].map(x => `<li>${itemHTML(x.item, ci)}<span class="n">×${x.n}</span></li>`).join("")}</ul></div>`).join("");
+    out.innerHTML = `
+      <div class="verdict ok">Znaleziono ${PRZ(r.total)} w ${r.found.size === 1 ? "1 kategorii" : `${r.found.size} kategoriach`}. Sprawdź listę i dodaj.</div>
+      <div class="found-list">${groups}</div>
+      <div class="row">
+        <button class="btn primary" id="pasteReplace">Zastąp ekwipunek</button>
+        <button class="btn" id="pasteAdd">Dodaj do ekwipunku</button>
+      </div>
+      <div class="note">Zastąpienie dotyczy tylko kategorii powyżej. Blokady zostają na przedmiotach, które nadal są w ekwipunku.</div>`;
+    const apply = replace => {
+      for (const [ci, g] of r.found) {
+        const s = slot(ci);
+        const oldLocks = new Map(s.inv.map(x => [key(x), x.lock || 0]));
+        if (replace || s.example) s.inv = [];
+        s.example = false;
+        for (const { item, n } of g.values()) invAdd(s, item, n);
+        if (replace) for (const x of s.inv) x.lock = Math.min(oldLocks.get(key(x)) || 0, x.n);
+      }
+      persist();
+      const first = [...r.found.keys()].sort((a, b) => a - b)[0];
+      if (!r.found.has(catIdx)) { catIdx = first; store.cat = first; }
+      out.innerHTML = `<div class="verdict ok">Ekwipunek zaktualizowany.</div>`;
+      $("pasteBox").value = "";
+      renderAll(true);
+    };
+    $("pasteReplace").onclick = () => apply(true);
+    $("pasteAdd").onclick = () => apply(false);
+  }
+
+  // ---- target ----
+  function renderTarget() {
+    picker($("tgtPicker"), { idPrefix: "tg", mode: "target" });
+    const t = slot().target;
+    if (t) for (const k of ["p", "b", "s", "l"]) { const el = $("tgtPicker").querySelector(`[data-kind="${k}"]`); if (el && [...el.options].some(o => o.value === t[k])) el.value = t[k]; }
+    else if (cat().name === "Głowa") { $("tg-p").value = "zlosliwy"; $("tg-b").value = "kapelusz"; $("tg-s").value = "pasterza"; }
+    $("tgtPicker").onchange = () => { slot().target = read($("tgtPicker")); persist(); };
+    const mode = store.mode || "optimal";
+    $("modeSeg").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === mode));
+    renderSetSums();
+  }
+  $("modeSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.mode = b.dataset.v; persist(); renderTarget(); };
+
+  const trimNote = R => R.engine === "pieces" ? `<div class="note">${R.total > R.n ? `Masz ${R.total} przydatnych przedmiotów; przeszukano ${R.n} najbardziej obiecujących. ` : `Przeszukano wszystkie przydatne przedmioty (${R.n}). `}Ścieżki składają się z dwóch grup po maks. ${R.g} przedmiotów, plus brakujące na wierzchu.</div>` : R.trimmed ? `<div class="note">Masz ${R.total} wolnych przedmiotów; przeszukano ${R.n} najbardziej obiecujących. Zablokuj te, których nie chcesz brać pod uwagę, żeby zmienić wybór.</div>` : "";
+  const partialNote = `<div class="note">Szukanie zatrzymało się na limicie bezpieczeństwa przed sprawdzeniem wszystkiego, więc może istnieć lepsza ścieżka. Zablokowanie zbędnych przedmiotów zmniejsza szukanie.</div>`;
+
+  const deepBtn = (R, deep) => !deep && (R.trimmed || R.partial || R.engine === "pieces") ? `<div class="row"><button class="btn small" id="deepBtn">Szukaj głębiej</button><span class="note">Większe grupy, do 15 s. Możesz też włączyć głębokie szukanie na stałe.</span></div>` : "";
+  const hookDeep = fn => { const b = $("deepBtn"); if (b) b.onclick = () => fn(true); };
+  const busy = fn => { $("result").innerHTML = `<div class="verdict">Szukam…</div>`; setTimeout(fn, 30); };
+
+  // ---- background search ----
+  // Route searches run in a worker built from makeEngine's own source, so the page stays responsive
+  // and a search can be stopped. If the browser refuses the worker, the same engine runs on the page.
+  const WORKER_SRC = `${makeEngine.toString()}
+const settings = {}; let eng = null;
+onmessage = e => {
+  const m = e.data;
+  if (m.type === "init") { eng = makeEngine(m.DATA, settings); return; }
+  for (const k of Object.keys(settings)) delete settings[k];
+  Object.assign(settings, m.settings);
+  eng.onPhase = text => postMessage({ id: m.id, phase: text });
+  try {
+    const slim = F => F && { R: { engine: F.R.engine, total: F.R.total, n: F.R.n, g: F.R.g, trimmed: F.R.trimmed, partial: F.R.partial, depth: F.R.depth, T: F.R.T }, routes: F.routes, ladder: F.ladder, higher: F.higher, alt: slim(F.alt) };
+    postMessage({ id: m.id, F: slim(eng.findRoutes(eng.compile(m.ci), m.T, m.units, m.mode, m.deep, null)) });
+  } catch (err) { postMessage({ id: m.id, error: String(err && err.stack || err) }); }
+};`;
+  let worker = null, workerOff = false, job = null;
+  const getWorker = () => {
+    if (workerOff) return null;
+    if (!worker) {
+      try { worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: "text/javascript" }))); worker.postMessage({ type: "init", DATA }); }
+      catch { workerOff = true; worker = null; }
+    }
+    return worker;
+  };
+  function cancelSearch() {
+    if (!job) return;
+    const j = job; job = null;
+    if (worker) { worker.terminate(); worker = null; }
+    j.resolve(null);
+  }
+  // findRoutes away from the page; resolves with its result, or null when cancelled
+  function searchAsync(T, units, mode, deep, onPhase) {
+    cancelSearch();
+    const ci = catIdx, settings = { noOver: store.noOver, depth: store.depth };
+    return new Promise(resolve => {
+      const my = { resolve }; job = my;
+      const runHere = () => setTimeout(() => { if (job !== my) return; job = null; $("result").dataset.ran = "page"; resolve(findRoutes(compile(ci), T, units, mode, deep, null)); }, 30);
+      const w = getWorker();
+      if (!w) return runHere();
+      const id = Math.random();
+      w.onmessage = e => {
+        const m = e.data;
+        if (job !== my || m.id !== id) return;
+        if (m.phase) { if (onPhase) onPhase(m.phase); return; }
+        if (m.error) { console.warn(m.error); return runHere(); }
+        job = null; $("result").dataset.ran = "worker"; resolve(m.F);
+      };
+      w.onerror = e => { if (e.preventDefault) e.preventDefault(); if (job !== my) return; workerOff = true; if (worker) worker.terminate(); worker = null; runHere(); };
+      w.postMessage({ type: "find", id, ci, T, units, mode, deep, settings });
+    });
+  }
+  // status while searching: what it is doing, time so far, a bar (filling up to the 15 s limit in deep mode), Anuluj
+  function searchBox(deep) {
+    const t0 = performance.now(), cap = deep ? " / 15 s" : "";
+    $("result").innerHTML = `<div class="verdict searching" role="status"><div class="srch-row"><b>${deep ? "Szukam głęboko…" : "Szukam…"}</b><span class="note" id="srchPhase"></span><span class="srch-time" id="srchTime">0,0 s${cap}</span><button class="btn small" id="srchCancel">Anuluj</button></div><div class="pbar${deep ? "" : " indet"}"><i id="srchBar"></i></div></div>`;
+    const tick = setInterval(() => {
+      const el = $("srchTime"); if (!el) return clearInterval(tick);
+      const sec = (performance.now() - t0) / 1000;
+      el.textContent = sec.toFixed(1).replace(".", ",") + " s" + cap;
+      if (deep) $("srchBar").style.width = Math.min(100, sec / 15 * 100) + "%";
+    }, 100);
+    if (narrow()) $("result").scrollIntoView({ block: "start", behavior: "smooth" });
+    $("srchCancel").onclick = () => { cancelSearch(); clearInterval(tick); $("result").innerHTML = `<div class="verdict">Szukanie anulowane.</div>`; };
+    return { phase: t => { const el = $("srchPhase"); if (el) el.textContent = t; }, done: () => clearInterval(tick) };
+  }
+  $("findBtn").onclick = () => runFind(!!store.deep);
+  // "Dlaczego nie?": each item of this category the shown route doesn't use, and what kept it out
+  function whyNotHTML(C, T, R, tree, mode) {
+    const s = slot(), A = alloc(), used = new Map();
+    if (tree) walk(tree, t => { if (t.leaf && !t.wild) { const k = key(t.it) + (t.auction ? "#a" : ""); used.set(k, (used.get(k) || 0) + 1); } });
+    const needP = !(T.p & 1), needS = !(T.s & 1), noOver = store.noOver !== false;
+    const fixedAbove = (t, x) => isOne(t) && t !== 1 && topBit(x) >= topBit(t);
+    const rule = it => {
+      const x = C.psOf(it);
+      if (!(x.l & T.l)) return T.l === 2 ? "cel jest legendarny, ten przedmiot nie" : "cel jest zwykły, ten przedmiot legendarny";
+      if (matchesLoose(C, it, T)) return "to już jest cel";
+      if (needP && !it.p) return "nie ma prefiksu, a cel go wymaga";
+      if (needS && !it.s) return "nie ma sufiksu, a cel go wymaga";
+      if (mode === "cheap" && (fixedAbove(T.p, x.p) || fixedAbove(T.s, x.s))) return "Najtańsza bierze tylko niższe poziomy afiksów niż cel";
+      if (noOver && overOf(C, T, it)) return "afiks wyższy niż w celu (Ustawienia: lepsze niż cel tylko w ostateczności)";
+      return "";
+    };
+    const spare = tree ? "pasuje do reguł, ale ta ścieżka go nie potrzebowała" : "pasuje do reguł, ale nie dał się połączyć w cel";
+    const rows = new Map(), add = (it, why, n) => { if (n <= 0) return; const k = key(it) + "|" + why; const r = rows.get(k); if (r) r.n += n; else rows.set(k, { it, why, n }); };
+    for (const e of s.inv) {
+      const k = key(e), lk = Math.min(e.lock || 0, e.n), rs = A.reserved.get(k) || 0, us = used.get(k) || 0;
+      add(e, "zablokowany", lk); add(e, "zarezerwowany w planie", rs);
+      add(e, rule(e) || spare, e.n - lk - rs - us);
+    }
+    // auction listings: copies reserved by plans and copies this route buys are taken off once in total
+    const resA = new Map(A.aucReserved), usedA = new Map([...used].filter(([k]) => k.endsWith("#a")).map(([k, c]) => [k.slice(0, -2), c]));
+    for (const e of (s.auction || [])) {
+      const k = key(e); let left = e.n;
+      const off = m => { const c = Math.min(left, m.get(k) || 0); m.set(k, (m.get(k) || 0) - c); left -= c; return c; };
+      add(e, "aukcja: zarezerwowany w planie", off(resA));
+      off(usedA);
+      add(e, store.affordOnly && tooDear(e) ? "aukcja: za drogo (Tylko na co mnie stać)" : "aukcja: " + (rule(e) || spare), left);
+    }
+    const list = [...rows.values()];
+    if (!list.length) return "";
+    const n = list.reduce((a, r) => a + r.n, 0);
+    const cut = R && R.total > R.n ? `<div class="note">Masz ${R.total} przydatnych przedmiotów, a szukanie wzięło ${R.n} najbardziej obiecujących; część z „pasuje do reguł” mogła więc nie być sprawdzona.</div>` : "";
+    return `<details class="whynot"><summary>Dlaczego nie? <span class="note">${PRZ(n)} bez użycia w tej ścieżce</span></summary>${cut}<ul>${list.map(r => `<li>${itemHTML(r.it)}${r.n > 1 ? `<span class="pill">×${r.n}</span>` : ""}<span class="why">${esc(r.why)}</span></li>`).join("")}</ul></details>`;
+  }
+  async function runFind(deep) {
+    const target = read($("tgtPicker"));
+    slot().target = target; persist();
+    const out = $("result"), C = compile();
+    const units = freeUnits().concat(freeAuction());
+    if (!units.length) { out.innerHTML = `<div class="verdict bad">Nie masz wolnych przedmiotów w tej kategorii. Dodaj przedmioty albo odblokuj któreś.</div>`; return; }
+    const T = targetSets(C, target);
+    const mode = store.mode || "optimal";
+    const desc = targetDesc(C, target);
+    const t0 = performance.now(), box = searchBox(deep);
+    const F = await searchAsync(T, units, mode, deep, box.phase);
+    box.done();
+    if (!F) return; // cancelled
+    const R = F.R;
+    if (!F.routes.length) {
+      out.innerHTML = `<div class="verdict bad">Brak ścieżki do <b>${esc(desc)}</b> z twoich wolnych przedmiotów, nawet z 4 brakującymi.</div>${trimNote(R)}${R.partial ? partialNote : ""}${deepBtn(R, deep)}${whyNotHTML(C, T, R, null, mode)}`;
+      hookDeep(runFind);
+      return;
+    }
+    // F: the route without items better than the target; F.alt: one with them (fewer missing)
+    let cur, routes, pick = 0;
+    const load = X => { cur = X; pick = 0; routes = X.routes.map(r => { const tree = serTree(C, r.tree); assignPrices(tree, units); return { ...r, tree }; }); };
+    load(F);
+    const ms = Math.round(performance.now() - t0);
+    // the better-than-the-result items a route uses (its open prefix/suffix fixed to what it makes)
+    const betterIn = Fx => { const r = Fx.routes[0], res = C.psOf(r.tree.it), Tr = { ...T, p: isOne(T.p) ? T.p : res.p, s: isOne(T.s) ? T.s : res.s }, l = []; walk(r.tree, t => { if (t.leaf && !t.wild && !t.auction && overOf(C, Tr, t.it)) l.push(t.it); }); return l; };
+    const altHTML = () => {
+      if (!F.alt) return "";
+      if (cur === F) { const a = F.alt.routes[0], used = betterIn(F.alt);
+        return `<div class="altbox"><div><b>Jest ścieżka z ${a.missing ? `${a.missing} ${pl(a.missing, "brakującym", "brakującymi", "brakującymi")}` : "wszystkim pod ręką"}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div><div class="note">Ustawienie „Nie zużywaj lepszych niż cel” trzyma je z daleka, więc pokazana jest ścieżka bez nich.</div><button class="btn small" id="altGo">Pokaż ścieżkę z nimi</button></div>`; }
+      return `<div class="altbox"><div><b>Ta ścieżka zużywa przedmioty lepsze niż wynik:</b> ${betterIn(cur).map(it => itemHTML(it)).join(" ")}</div><button class="btn small" id="altBack">Wróć do ścieżki bez nich</button></div>`;
+    };
+    const modeName = { fast: "najszybsza", cheap: "najtańsza", optimal: "optymalna" }[mode];
+    const render = () => {
+      const r = routes[pick];
+      const ownedN = r.L - r.missing - r.auction;
+      let dearN = 0; walk(r.tree, t => { if (t.auction && tooDear(t)) dearN++; });
+      const overTxt = r.over ? ` <span class="warnline">Zużywa ${r.over === 1 ? "1 przedmiot" : `${r.over} przedmioty`} z afiksem wyższym niż cel, bo bez ${r.over === 1 ? "niego" : "nich"} nie ma lepszej ścieżki.</span>` : "";
+      const aucTxt = r.auction ? ` Używa ${r.auction === 1 ? "1 przedmiotu" : `${r.auction} przedmiotów`} z aukcji (niebieskie${dearN ? `; ${dearN} za ${dearN === 1 ? "drogi" : "drogie"}, czerwone` : ""}).` : "";
+      const head = !r.steps && r.auction
+        ? `<div class="verdict ok">Gotowy przedmiot jest na aukcji: ${itemHTML(r.tree.it)} za ${fmt(payOf(r.tree))} kk${tooDear(r.tree) ? " (za drogo)" : ""}. Nic nie trzeba łączyć. <span class="note">(ścieżka ${modeName} · ${ms} ms)</span></div>`
+        : r.missing
+        ? `<div class="verdict miss">Masz ${ownedN} z ${r.L} składników, brakuje ${r.missing}. Gdy ${r.missing === 1 ? "go zdobędziesz" : "je zdobędziesz"}, ${POL(r.steps)} ${pl(r.steps, "da", "dadzą", "da")} ${itemHTML(r.tree.it)}.${aucTxt}${overTxt} <span class="note">(ścieżka ${modeName} · ${ms} ms)</span></div>`
+        : `<div class="verdict ok">${POL(r.steps)} do ${itemHTML(r.tree.it)}, z użyciem ${ownedN === 1 ? "1 twojego przedmiotu" : `${ownedN} twoich przedmiotów`}.${aucTxt}${overTxt} <span class="note">(ścieżka ${modeName} · ${ms} ms)</span></div>`;
+      const R = cur.R;
+      const alts = cur.ladder ? (routes.length > 1 ? `<div class="alts"><span class="note">Użyj więcej swoich przedmiotów, żeby kupić słabszy brakujący. Przy każdym stopniu: prefiks i sufiks tego, co trzeba kupić lub zdobyć. Kliknij stopień, żeby zobaczyć ścieżkę:</span>${routes.map((q, i) => `<button class="alt${i === pick ? " on" : ""}" data-alt="${i}" aria-pressed="${i === pick}">Użyj ${q.used === 1 ? "1 przedmiotu" : `${q.used} przedmiotów`} → kup ${buyNames(q.tree)}</button>`).join("")}</div>` : r.missing || r.auction ? `<div class="note">Użycie większej liczby przedmiotów nie obniży zakupu.</div>` : "") : routes.length > 1 ? `<div class="alts"><span class="note">Inne ścieżki z tą samą liczbą brakujących:</span>${routes.map((q, i) => `<button class="alt${i === pick ? " on" : ""}" data-alt="${i}" aria-pressed="${i === pick}">Ścieżka ${i + 1} · ${POL(q.steps)} · koszt ${q.cost}</button>`).join("")}</div>` : "";
+      const higherHTML = cur.higher && cur.higher.length ? `<div class="higher"><div class="note"><b>Wyższe opcje.</b> Te twoje przedmioty mają afiks wyższy niż element, przy którym pasują, więc Najtańsza ich nie używa. Możesz wybrać je ręcznie:</div><ul>${F.higher.map(h => `<li>${itemHTML(h.u)} <span class="note">→ pasuje przy ${h.at.leaf ? "brakującym" : `kroku ${h.at.step}`}: ${itemHTML(h.at.it)}</span></li>`).join("")}</ul><button class="btn small" id="toManual">Otwórz w ręcznym planie</button></div>` : "";
+      const depthNote = R.engine === "topdown" ? `<div class="note">Najtańsza: od celu w dół, tylko niższe prefiksy i sufiksy (bazy się nie liczą), maks. ${R.depth} ${pl(R.depth, "poziom", "poziomy", "poziomów")} połączeń.</div>` : "";
+      out.innerHTML = `${head}${altHTML()}${alts}${depthNote}${trimNote(R)}${R.partial ? partialNote : ""}${deepBtn(R, deep)}${higherHTML}
+        ${routeBody(r.tree, { track: true })}
+        ${whyNotHTML(C, T, R, r.tree, mode)}
+        <div class="row"><button class="btn primary" id="lockPlan">Zapisz jako plan</button><span class="note">Rezerwuje te przedmioty, żeby inne wyszukiwania ich nie brały.</span></div>`;
+      out.querySelectorAll("[data-alt]").forEach(b => b.onclick = () => { pick = +b.dataset.alt; render(); });
+      if ($("altGo")) $("altGo").onclick = () => { load(F.alt); render(); };
+      if ($("altBack")) $("altBack").onclick = () => { load(F); render(); };
+      hookDeep(runFind);
+      r.done ||= new Set();
+      hookSteps(out, r.done);
+      $("lockPlan").onclick = () => savePlan(r.tree, desc, r.steps, [...r.done]);
+      if ($("toManual")) $("toManual").onclick = () => openInManual(r.tree, target, desc);
+    };
+    render();
+  }
+
+  // what a route needs you to buy or find, named by its affixes: "kuloodporny · prekognicji"
+  const buyNames = tree => {
+    const C = compile(), out = [], nm = (v, t, none) => v ? esc(v) + tierSup(t) : none;
+    walk(tree, t => { if (t.wild || t.auction) out.push(`${nm(t.it.p, C.idxP(t.it), "bez prefiksu")} · ${nm(t.it.s, C.idxS(t.it), "bez sufiksu")}`); });
+    return out.join(", ") || "nic";
+  };
+  // ---- manual plan builder ----
+  // Start from the target. Each slot is filled by an item you have, by a pair of items that make
+  // it, or by your item plus a missing one; the missing one becomes a new slot. The app fills what
+  // it can and every slot has a menu to change the choice.
+  let man = null; // { C, T, desc, root, units }
+  const ukey = u => key(u) + (u.src ? "#a" : "");
+  // One level down without your items: pairs of two items that make R, part by part (parts
+  // combine on their own). Lowest tiers first; each half is one exact item.
+  function twoMissing(C, R) {
+    const lv = R.l & -R.l, per = {};
+    for (const P of ["b", "p", "s"]) {
+      const vals = bitsOf(C.WILD[P]), out = [];
+      // both halves as low as possible: the higher of the two tiers first, then their sum, so 9 + 9
+      // comes before 1 + 17 (combining roughly averages the tiers, so the sums tie)
+      for (const u of vals) for (const v of vals) if (v >= u && (C.fns[P](1 << u, 1 << v) & R[P])) out.push([u, v, v * 100 + u + v]);
+      out.sort((a, b) => a[2] - b[2]);
+      per[P] = out.slice(0, 5);
+      if (!out.length) return [];
+    }
+    const res = [];
+    for (const b of per.b) for (const p of per.p) for (const s2 of per.s) {
+      const X = { b: 1 << b[0], p: 1 << p[0], s: 1 << s2[0], l: lv }, Y = { b: 1 << b[1], p: 1 << p[1], s: 1 << s2[1], l: lv };
+      // affixes weigh 3x (as in the item score); per part the higher half counts first
+      const top = 3 * (p[1] + s2[1]) + b[1];
+      res.push({ X, Y, top, ease: C.score(lowOf(C, X)) + C.score(lowOf(C, Y)) });
+    }
+    res.sort((a, b) => a.top - b.top || a.ease - b.ease);
+    return res.slice(0, 30);
+  }
+  // free copies left for a slot: everything free minus what the rest of the tree already uses
+  function manAvail(skip) {
+    const av = new Map();
+    for (const u of man.units) { const k = ukey(u); if (!av.has(k)) av.set(k, []); av.get(k).push(u); }
+    for (const l of av.values()) l.sort((a, b) => priceOrder(a, b));
+    (function use(n) {
+      if (n === skip || !n.fill) return;
+      if (n.fill.kind === "item") { const l = av.get(ukey(n.fill.u)); if (l && l.length) l.shift(); }
+      else n.fill.kids.forEach(use);
+    })(man.root);
+    return av;
+  }
+  const overT = u => overOf(man.C, man.T, u);
+  const unitRank = u => (u.src ? 1000 : 0) + (!u.src && overT(u) ? 1000 : 0) + man.C.score(u);
+  // every way to fill a slot with requirement R from the free items
+  const isTarget = it => matchesLoose(man.C, it, man.T) || (man.banned && man.banned.has(key(it)));
+  // items above a node in the tree (its parents up to the top): none of them may appear in its branch
+  function ancestorsOf(node) {
+    const path = [];
+    (function find(n) { if (n === node) return true; if (n.fill && n.fill.kind === "split") for (const k of n.fill.kids) { path.push(n); if (find(k)) return true; path.pop(); } return false; })(man.root);
+    return new Set(path.map(n => { const it = manItem(n); return it ? key(it) : ""; }).filter(Boolean));
+  }
+  // man.own = the node's own item: a ready copy of it may fill the node, but it may not be a part
+  // used to build it (that would be a loop too)
+  const withBanned = (node, fn) => {
+    const prev = [man.banned, man.own], it = node === man.root ? null : manItem(node);
+    man.banned = ancestorsOf(node); man.own = it ? key(it) : null;
+    try { return fn(); } finally { [man.banned, man.own] = prev; }
+  };
+  const notOwn = it => !man.own || key(it) !== man.own;
+  // pairs of missing items one level down, without the final target itself
+  const noOver = () => store.noOver !== false;
+  const tooGood = it => noOver() && overT(it);
+  const capS = S => { if (!noOver()) return S; const W = capWild(man.C, man.T), c = { b: S.b & W.b, p: S.p & W.p, s: S.s & W.s, l: S.l & W.l }; return c.b && c.p && c.s && c.l ? c : null; };
+  const twoMissingOK = (C, R, isRoot) => twoMissing(C, R).filter(t => { const x = lowOf(C, t.X), y = lowOf(C, t.Y), r = C.combItem(x, y); return !isTarget(x) && !isTarget(y) && !tooGood(x) && !tooGood(y) && notOwn(x) && notOwn(y) && (isRoot || !r || !isTarget(r)); });
+  function manWays(R, av, isRoot) {
+    const C = man.C, keys = [...av.keys()].filter(k => av.get(k).length && !isTarget(av.get(k)[0]) && !tooGood(av.get(k)[0]));
+    const first = k => av.get(k)[0];
+    const direct = [], pairs = [], halves = [];
+    if (!isRoot) for (const k of keys) if (matchesLoose(C, first(k), R)) direct.push(first(k));
+    for (const ka of keys) {
+      const a = first(ka), S = preimage(C, a, R); if (!S) continue;
+      let pair = false;
+      for (const kb of keys) {
+        if (kb < ka || (kb === ka && av.get(ka).length < 2)) continue;
+        const b = kb === ka ? av.get(ka)[1] : first(kb);
+        if (matchesLoose(C, b, S) && notOwn(a) && notOwn(b) && (isRoot || !isTarget(C.combItem(a, b)))) { pairs.push([a, b]); pair = true; }
+      }
+      const Sm = capS(S); // the missing half may not be better than the target either
+      if (Sm && notOwn(a) && notOwn(lowOf(C, Sm)) && !isTarget(lowOf(C, Sm)) && (isRoot || !isTarget(C.combItem(a, lowOf(C, Sm))))) halves.push({ a, S: Sm, ease: C.score(lowOf(C, Sm)) });
+    }
+    direct.sort((x, y) => unitRank(x) - unitRank(y));
+    pairs.sort((x, y) => unitRank(x[0]) + unitRank(x[1]) - unitRank(y[0]) - unitRank(y[1]));
+    halves.sort((x, y) => (overT(x.a) && !x.a.src) - (overT(y.a) && !y.a.src) || x.ease - y.ease || unitRank(x.a) - unitRank(y.a));
+    return { direct, pairs, halves };
+  }
+  const itemNode = u => ({ req: man.C.psOf(u), fill: { kind: "item", u } });
+  // a missing slot remembers the item it was planned as, so later recalculation of what it needs
+  // doesn't swap it for another lowest-tier item (which could even be the target itself)
+  const slotNode = (R, pref) => ({ req: R, fill: null, pref: pref || lowOf(man.C, R) });
+  const slotItem = n => n.pref && n.req && matchesLoose(man.C, n.pref, n.req) ? n.pref : n.req ? lowOf(man.C, (store.noOver !== false && capS(n.req)) || n.req) : null;
+  const takeU = (av, u) => { const l = av.get(ukey(u)); l.splice(l.indexOf(u), 1); };
+  // Turns a route tree into builder slots, taking the copies it uses from `av`. Each slot's
+  // requirement is worked out from its partner, so every slot keeps a working menu.
+  function toSlots(t, Rq, av) {
+    const C = man.C;
+    if (t.wild) return slotNode(Rq, t.it);
+    if (t.leaf) { const l = av.get(key(t.it) + (t.auction ? "#a" : "")), u = l && l.length ? l.shift() : null; return u ? { req: Rq, fill: { kind: "item", u } } : slotNode(Rq, t.it); }
+    const [a, b] = t.kids;
+    return { req: Rq, fill: { kind: "split", kids: [toSlots(a, preimage(C, b.it, Rq) || C.psOf(a.it), av), toSlots(b, preimage(C, a.it, Rq) || C.psOf(b.it), av)] } };
+  }
+  // Fills a slot automatically: an item you have that already fits, otherwise the best route
+  // the normal search finds for this slot (fewest missing items), rebuilt as builder slots.
+  function manAuto(R, av, isRoot) {
+    const C = man.C, W = manWays(R, av, isRoot);
+    if (W.direct.length) { const u = W.direct[0]; takeU(av, u); return itemNode(u); }
+    const units = [].concat(...av.values()).filter(u => !isTarget(u));
+    if (!units.length) return slotNode(R);
+    // the root uses the chosen route mode (and deep search); smaller fills along the way use the same mode
+    const r = findRoutes(C, R, units, store.mode || "optimal", isRoot && !!store.deep, isRoot ? null : { set: man.T, keys: man.banned || [] }).routes[0];
+    if (!r || r.L === r.missing) return slotNode(R);
+    return toSlots(r.tree, R, av);
+  }
+  // what a builder node gives: its item, the combine of its two parts, or the lowest-tier item that
+  // fits a missing slot
+  function manItem(n) {
+    const C = man.C;
+    if (!n.fill) return slotItem(n);
+    if (n.fill.kind === "item") return fromKey(key(n.fill.u));
+    const a = manItem(n.fill.kids[0]), b = manItem(n.fill.kids[1]);
+    return a && b ? C.combItem(a, b) : null;
+  }
+  // after any change, each part's requirement is worked out again from the top: what it must be
+  // so that, with its partner as chosen, the combine still gives what the level above needs
+  function manReq(n, R) {
+    n.req = R;
+    if (!n.fill || n.fill.kind !== "split") return;
+    const [a, b] = n.fill.kids, C = man.C;
+    const ib = manItem(b);
+    manReq(a, R && ib ? preimage(C, ib, R) : null);
+    const ia = manItem(a);
+    manReq(b, R && ia ? preimage(C, ia, R) : null);
+  }
+  // turns the builder tree into the usual route tree (for the drawing, shopping list and plans)
+  function manTree(n, nodes, above = new Set()) {
+    const C = man.C, mid = nodes.push(n) - 1, ok = it => it && n.req && matchesLoose(C, it, n.req);
+    const ownIt = manItem(n), below = new Set(above); if (ownIt) below.add(key(ownIt));
+    let t;
+    if (!n.fill) t = n.req ? { it: slotItem(n), leaf: true, wild: true, loose: n.req, looseText: looseText(C, n.req) } : { it: { p: "", b: "?", s: "", l: false }, leaf: true, wild: true, bad: true };
+    else if (n.fill.kind === "item") { const u = n.fill.u, it = fromKey(key(u)); t = u.src ? { it, leaf: true, auction: true, price: u.price, pk: u.pk } : { it, leaf: true }; if (n.forced && !ok(it)) t.bad = true; }
+    else {
+      const a = manTree(n.fill.kids[0], nodes, below), b = manTree(n.fill.kids[1], nodes, below), it = C.combItem(a.it, b.it);
+      t = { it: it || { p: "", b: "nie łączą się", s: "", l: false }, kids: [a, b] };
+      if (!ok(it)) t.bad = true;
+    }
+    if (n !== man.root && t.it && (matchesLoose(C, t.it, man.T) || above.has(key(t.it)))) { t.bad = true; man.targetBelow = true; }
+    if (t.bad) man.broken = true;
+    t.mid = mid;
+    return t;
+  }
+  function manRender() {
+    const C = man.C, out = $("result");
+    manReq(man.root, man.T);
+    man.broken = false; man.targetBelow = false;
+    const nodes = [], tree = manTree(man.root, nodes);
+    let st = 0; walk(tree, t => { if (t.kids) t.step = ++st; });
+    let miss = 0, auc = 0; walk(tree, t => { if (t.wild) miss++; if (t.auction) auc++; });
+    if (!nodes.includes(man.sel)) man.sel = nodes.find(n => !n.fill) || man.root;
+    const selId = nodes.indexOf(man.sel);
+    const head = man.targetBelow ? `<div class="verdict bad">Czerwony element to cel albo przedmiot, który jest już wyżej w tej samej gałęzi. Nic nie może powstawać z samego siebie. Kliknij go i wybierz inaczej.</div>` : man.broken ? `<div class="verdict bad">Czerwone elementy nie pasują: wybrany przedmiot nie daje tego, czego potrzeba wyżej, więc kroki nad nim też się psują. Kliknij go i wybierz inaczej albo zmień partnera (jego „Potrzebne” pokazuje, co pasowałoby do twojego wyboru).</div>`
+      : !man.root.fill ? `<div class="verdict bad">Nic z twoich przedmiotów nie daje <b>${esc(man.desc)}</b> automatycznie. Wybierz przedmioty poniżej.</div>`
+      : miss ? `<div class="verdict miss">Ręczny plan: brakuje ${PRZ(miss)}${auc ? `, ${auc} z aukcji` : ""}. Kliknij element drzewa, żeby go zmienić.</div>`
+      : `<div class="verdict ok">Ręczny plan gotowy: ${POL(st)}${auc ? `, ${auc} z aukcji` : ""}. Kliknij element drzewa, żeby go zmienić.</div>`;
+    const editTree = treeHTML(tree, selId);
+    out.innerHTML = `${head}
+      <h3 class="sub-h">Drzewo łączenia <small class="note">kliknij element, żeby go zmienić</small></h3>
+      ${editTree}
+      <div class="medit" id="manEdit">${manEditor(man.sel, man.sel === man.root)}</div>
+      ${shopHTML(tree)}
+      ${tree.kids && !man.broken ? `<h3 class="sub-h">Krok po kroku <span class="progress note"></span></h3>${stepsHTML(tree, true)}` : ""}
+      <div class="row">${man.root.fill && !man.broken ? `<button class="btn primary" id="manSave">Zapisz jako plan</button>` : ""}<button class="btn" id="manAuto">Wypełnij wszystko automatycznie</button><button class="btn ghost" id="manClear">Zacznij od nowa</button></div>`;
+    out.querySelectorAll(".tcard[data-mid]").forEach(c => {
+      const pick = () => { man.sel = nodes[+c.dataset.mid]; manRender(); $("manEdit").scrollIntoView({ block: "nearest" }); };
+      c.onclick = pick; c.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+    });
+    out.querySelectorAll("[data-opt]").forEach(b => b.onclick = () => manPick(man.sel, b.dataset.opt, man.sel === man.root));
+    const f = $("manFilter");
+    const plain = el => { const c = el.cloneNode(true); c.querySelectorAll("sup").forEach(x => x.remove()); return c.textContent.toLowerCase().replace(/\s+/g, " "); };
+    if (f) f.oninput = () => { const q = f.value.toLowerCase().trim(); out.querySelectorAll(".mopts button").forEach(b => { b.hidden = q && !(b.dataset.q ??= plain(b)).includes(q); }); };
+    // ticks are kept while the tree stays the same; any change to the tree clears them
+    const sig = JSON.stringify(tree, (k, v) => k === "mid" ? undefined : v);
+    if (man.sig !== sig) { man.sig = sig; man.done = new Set(); }
+    hookSteps(out, man.done);
+    if ($("manSave")) $("manSave").onclick = () => savePlan(tree, man.desc + " (ręczny)", st, [...man.done]);
+    $("manAuto").onclick = async () => { const m = man, root = await manFillRoot(); if (!root || man !== m) return; man.root = root; man.sel = null; manRender(); };
+    $("manClear").onclick = () => { man.root = slotNode(man.T); man.sel = man.root; manRender(); };
+  }
+  // the edit panel for the selected element: every way to fill it, and any of your free items
+  function manEditor(n, isRoot) { return withBanned(n, () => manEditorIn(n, isRoot)); }
+  function manEditorIn(n, isRoot) {
+    const C = man.C, av = manAvail(n), R = n.req || C.WILD;
+    const W = manWays(R, av, isRoot);
+    const uText = u => `${itemHTML(u)}${u.src ? ` <span class="tag auc${tooDear(u) ? " dear" : ""}">aukcja · ${priceText(u.price, u.pk)}</span>` : overT(u) ? ` <span class="tag over" title="Afiks wyższy niż w celu: ten przedmiot jest cenniejszy niż to, co robisz">▲ wyżej niż cel</span>` : ""}`;
+    // colour by where the parts come from: green = yours, blue = auction, dotted = one part still missing,
+    // green-blue stripes = one yours and one auction, plain = both missing
+    const one = u => u.src ? "c-auc" : "c-own";
+    const two = (a, b) => !a.src && !b.src ? "c-own" : a.src && b.src ? "c-auc" : "c-mix";
+    const btn = (v, html, cls = "") => `<button class="mopt ${cls}" data-opt="${esc(v)}">${html}</button>`;
+    const grp = (title, note, items) => items.length ? `<div class="mgrp"><div class="mgrp-h">${title} <span class="note">${note}</span></div><div class="mopts">${items.join("")}</div></div>` : "";
+    const directK = new Set(W.direct.map(ukey));
+    const others = []; for (const [k, l] of av) if (l.length && !directK.has(k) && !isTarget(l[0]) && !tooGood(l[0])) others.push(l[0]);
+    // items you own that fit here but whose copies are all used elsewhere: one more copy, missing
+    const copies = [], seenC = new Set();
+    for (const u of man.units) { const k = key(u); if (u.src || seenC.has(k)) continue; seenC.add(k);
+      if ((av.get(k) || []).length || !matchesLoose(C, u, R) || isTarget(u) || tooGood(u)) continue; copies.push(u); }
+    others.sort((a, b) => unitRank(a) - unitRank(b));
+    const cur = !n.fill ? "brakujący" : n.fill.kind === "item" ? itemHTML(n.fill.u) : "połączenie dwóch";
+    const what = isRoot ? "Cel" : n.fill && n.fill.kind === "split" ? "Krok pośredni" : "Składnik";
+    return `<div class="medit-h"><div><b>${what}</b> · teraz: ${cur}</div>${n.req ? `<div class="note">Potrzebne: ${looseHTML(C, n.req)}</div>` : `<div class="note bad">Jego partner nie łączy się z niczym, co da wynik wyżej. Zmień partnera albo ten element.</div>`}</div>
+      <div class="row">${isRoot ? "" : btn("miss", "Zostaw jako brakujący", "act")}${btn("auto", "Wypełnij automatycznie", "act")}</div>
+      <div class="mlegend"><span class="mopt c-own">twoje</span><span class="mopt c-own-half">twój + brakujący</span><span class="mopt c-auc">aukcja</span><span class="mopt c-auc-half">aukcja + brakujący</span><span class="mopt c-mix">twój + aukcja</span><span class="mopt c-copy">kolejna kopia (brakuje)</span><span class="mopt">oba brakujące</span></div>
+      <input class="mfilter" id="manFilter" placeholder="Filtruj po nazwie…" aria-label="Filtruj opcje">
+      ${grp("Pasuje od razu", "twój przedmiot spełnia wymaganie", W.direct.map(u => btn("d:" + ukey(u), uText(u), one(u))))}
+      ${grp("Dwa twoje przedmioty", "razem dają ten element", W.pairs.slice(0, 60).map(([a, b]) => btn("p:" + ukey(a) + "+" + ukey(b), `${uText(a)} <span class="plus">+</span> ${uText(b)}`, two(a, b))))}
+      ${grp("Twój przedmiot + brakujący", "brakujący zostanie dobrany dalej", W.halves.slice(0, 60).map(h => btn("h:" + ukey(h.a), `${uText(h.a)} <span class="plus">+</span> <span class="note">${looseHTML(C, h.S)}</span>`, one(h.a) + "-half")))}
+      ${grp("Dwa brakujące", "najniższe poziomy, które to dają", twoMissingOK(C, R, isRoot).slice(0, 20).map((t, j) => btn("t:" + j, `${itemHTML(lowOf(C, t.X))} <span class="plus">+</span> ${itemHTML(lowOf(C, t.Y))}`)))}
+      ${isRoot ? "" : grp("Kolejna kopia (do zdobycia)", "masz ten przedmiot, ale wszystkie kopie są już użyte; ta będzie brakująca", copies.map(u => btn("c:" + key(u), itemHTML(u), "c-copy")))}
+      ${isRoot ? "" : grp("Inne twoje przedmioty", "nie spełniają wymagania; wybór na własną rękę", others.map(u => btn("d:" + ukey(u), uText(u), "nofit")))}`;
+  }
+  function manPick(n, v, isRoot) { withBanned(n, () => manPickIn(n, v, isRoot)); manRender(); }
+  function manPickIn(n, v, isRoot) {
+    const av = manAvail(n), find = k => (av.get(k) || [])[0], R = n.req || man.C.WILD;
+    n.forced = false;
+    // read the chosen "two missing" pair off the same list the panel showed
+    const tPick = v.startsWith("t:") ? twoMissingOK(man.C, R, isRoot)[+v.slice(2)] : null;
+    // parts built below this node may not be this node's item: neither the item it showed before
+    // (man.own) nor the item the chosen combine will make, which can differ when the need is loose
+    // (an empty slot shows the lowest base; a pair may make another base that also fits)
+    const banKids = made => { man.banned = new Set([...man.banned, ...[man.own, made && key(made)].filter(Boolean)]); };
+    if (v === "miss") { n.fill = null; }
+    else if (v === "auto") { n.fill = manAuto(R, av, isRoot).fill; }
+    else if (v.startsWith("t:")) {
+      const t = tPick; if (!t) return;
+      banKids(man.C.combItem(lowOf(man.C, t.X), lowOf(man.C, t.Y)));
+      const x = manAuto(t.X, av, false);
+      n.fill = { kind: "split", kids: [x, manAuto(t.Y, av, false)] };
+    }
+    else if (v.startsWith("c:")) { n.fill = null; n.pref = fromKey(v.slice(2)); }
+    else if (v.startsWith("d:")) { const u = find(v.slice(2)); n.fill = { kind: "item", u }; n.forced = !matchesLoose(man.C, u, R); }
+    else if (v.startsWith("p:")) {
+      const [ka, kb] = v.slice(2).split("+"), a = find(ka); takeU(av, a); const b = (av.get(kb) || [])[0];
+      n.fill = { kind: "split", kids: [itemNode(a), { req: null, fill: { kind: "item", u: b } }] };
+    } else if (v.startsWith("h:")) {
+      const a = find(v.slice(2)), S = capS(preimage(man.C, a, R)) || preimage(man.C, a, R); takeU(av, a); banKids(man.C.combItem(a, lowOf(man.C, S)));
+      // the missing half is filled further if your items allow it
+      n.fill = { kind: "split", kids: [itemNode(a), manAuto(S, av, false)] };
+    }
+    // after a change, select the first missing element so you can carry on
+    man.sel = n.fill && n.fill.kind === "split" ? (n.fill.kids.find(k => !k.fill) || n) : n;
+  }
+  // load a found route into the manual plan builder, to swap parts by hand
+  function openInManual(tree, target, desc) {
+    const C = compile(), T = targetSets(C, target);
+    man = { C, T, desc, units: freeUnits().concat(freeAuction()), root: null, sel: null };
+    man.root = slotNode(T);
+    man.root = toSlots(tree, T, manAvail(null));
+    setView("manual", true);
+    manRender();
+  }
+  $("manBtn").onclick = async () => {
+    const target = read($("tgtPicker"));
+    slot().target = target; persist();
+    const C = compile(), T = targetSets(C, target);
+    const desc = targetDesc(C, target);
+    man = { C, T, desc, units: freeUnits().concat(freeAuction()), root: null, sel: null };
+    man.root = slotNode(T);
+    const m = man, root = await manFillRoot();
+    if (!root || man !== m) return;
+    man.root = root; manRender();
+  };
+  // the plan's first fill (the whole tree) searches in the background; same as manAuto at the top
+  async function manFillRoot() {
+    const av = manAvail(null), units = [].concat(...av.values()).filter(u => !isTarget(u));
+    if (!units.length) return slotNode(man.T);
+    const deep = !!store.deep, box = searchBox(deep);
+    const F = await searchAsync(man.T, units, store.mode || "optimal", deep, box.phase);
+    box.done();
+    if (!F) return null;
+    const r = F.routes[0];
+    return !r || r.L === r.missing ? slotNode(man.T) : toSlots(r.tree, man.T, av);
+  }
+
+  function savePlan(tree, desc, steps, done = []) {
+    const leaves = new Map(), missing = [];
+    walk(tree, t => { if (t.wild) missing.push({ it: t.it, loose: t.loose, looseText: t.looseText }); else if (t.leaf) { const lk = key(t.it) + (t.auction ? "#a" : ""); leaves.set(lk, (leaves.get(lk) || 0) + 1); } });
+    slot().example = false;
+    slot().plans.push({ id: Date.now(), target: desc, result: tree.it, leaves: [...leaves].map(([k, c]) => k.endsWith("#a") ? [k.slice(0, -2), c, "a"] : [k, c]), missing, tree, steps, done });
+    persist(); refresh();
+    $("result").innerHTML = `<div class="verdict ok">Zapisano jako plan. Przedmioty są zarezerwowane; zobacz Plany.</div>`;
+  }
+
+  // ---- highest possible craft ----
+  // Climbing: start from your best item. If the next-highest item improves it, combine. If not,
+  // try to upgrade that next item with the items below it (same procedure), then check whether
+  // the two now combine into something higher. Repeat until nothing helps.
+  // Value: the counted affix tiers first; the base only breaks ties, and only when switched on.
+  // ring and amulet bases are a style choice, not a ladder, so bases never count there
+  const ringLike = () => ["Pierścienie", "Amulety"].includes(DATA[catIdx].name);
+  function bestValue(C, mode, withBases) {
+    const noAffix = !C.hasP && !C.hasS;
+    const b = it => C.idxB(it);
+    if (noAffix) return it => b(it);
+    const aff = mode === "p" ? it => C.idxP(it) : mode === "s" ? it => C.idxS(it) : it => C.idxP(it) + C.idxS(it);
+    return it => aff(it) * 100 + (withBases ? b(it) : 0);
+  }
+  // nodes are { it, k, v } with v = val(it), worked out once; crafted nodes also have kids
+  function climbBest(C, start, pool, val, budget) {
+    const combine = (a, b) => { const r = C.combItem(a.it, b.it); return r ? { it: r, kids: [a, b], v: val(r) } : null; };
+    const climb = (cur, pool, depth) => {
+      for (let guard = 0; guard < 200 && budget.n > 0; guard++) {
+        pool = pool.slice().sort((a, b) => b.v - a.v || (a.k < b.k ? -1 : 1));
+        let next = null;
+        for (let i = 0; i < pool.length && !next; i++) {
+          if (--budget.n <= 0) break;
+          const N = pool[i];
+          const r = combine(cur, N);
+          // a combine only counts when the result beats both items that go in
+          if (r && r.v > Math.max(cur.v, N.v)) { next = { cur: r, pool: pool.filter((_, j) => j !== i) }; break; }
+          // the next item doesn't help as it is: try upgrading it with the items below it
+          if (depth < 5 && i < 4) {
+            const below = pool.filter((p, j) => j !== i && p.v <= N.v);
+            const above = pool.filter((p, j) => j !== i && p.v > N.v);
+            const up = climb(N, below, depth + 1);
+            if (up.cur !== N) {
+              const r2 = combine(cur, up.cur);
+              if (r2 && r2.v > Math.max(cur.v, up.cur.v)) next = { cur: r2, pool: [...above, ...up.pool] };
+              else if (up.cur.v > cur.v) next = { cur: up.cur, pool: [...above, ...up.pool, cur] };
+            }
+          }
+        }
+        if (!next) break;
+        cur = next.cur; pool = next.pool;
+      }
+      return { cur, pool };
+    };
+    return climb(start, pool, 0).cur;
+  }
+  const treeFrom = node => {
+    let step = 0;
+    const f = n => n.kids ? (() => { const a = f(n.kids[0]), b = f(n.kids[1]); return { it: n.it, kids: [a, b], step: ++step }; })() : { it: n.it, leaf: true };
+    const t = f(node); return { tree: t, steps: step };
+  };
+  const bestCache = new Map();
+  function bestCraft(C, units, mode, withBases) {
+    const ck = JSON.stringify([catIdx, mode, withBases, units.map(key).sort()]);
+    if (bestCache.has(ck)) return bestCache.get(ck);
+    const noAffix = !C.hasP && !C.hasS;
+    const val = bestValue(C, mode, withBases);
+    const groups = [];
+    for (const leg of [true, false]) {
+      const items = units.filter(it => !!it.l === leg && (noAffix || (mode === "p" ? it.p : mode === "s" ? it.s : (it.p || it.s))));
+      if (!items.length) continue;
+      const nodes = items.map((it, i) => ({ it, k: key(it) + "#" + i, v: val(it) }));
+      nodes.sort((a, b) => b.v - a.v);
+      // Climb from every item, best first. Only results that were actually crafted count;
+      // the best owned item is kept just for comparison.
+      const crafted = [];
+      for (let s = 0; s < Math.min(30, nodes.length); s++) {
+        const node = climbBest(C, nodes[s], nodes.filter((_, j) => j !== s), val, { n: 40000 });
+        if (node.kids) crafted.push(node);
+      }
+      const combinesOf = n => n.kids ? 1 + combinesOf(n.kids[0]) + combinesOf(n.kids[1]) : 0;
+      crafted.sort((a, b) => b.v - a.v || combinesOf(a) - combinesOf(b));
+      const best = crafted[0] || null;
+      groups.push({ leg, best, ...(best ? treeFrom(best) : {}), topOwned: nodes[0].it, count: items.length });
+    }
+    if (bestCache.size >= 20) bestCache.delete(bestCache.keys().next().value); // keep the cache small
+    bestCache.set(ck, groups);
+    return groups;
+  }
+  // "Wytwórz kolejny": the items the shown results use are set aside and the next best item is
+  // crafted from what is left. Nothing is saved; a new search starts over.
+  let bestRun = null; // { used: Map(key -> count), blocks: [html] }
+  $("bestBtn").onclick = () => { bestRun = null; busy(() => runBest()); };
+  function runBest() {
+    const out = $("result"), C = compile();
+    bestRun ||= { used: new Map(), blocks: [] };
+    const left = new Map(bestRun.used);
+    const units = byRarity(freeUnits(), store.bestRar || "both").filter(u => { const k = key(u), c = left.get(k) || 0; if (c > 0) { left.set(k, c - 1); return false; } return true; });
+    const prev = bestRun.blocks.join("");
+    const stop = msg => { out.innerHTML = prev + `<div class="verdict bad">${msg}</div>`; out.querySelectorAll(".trackbox").forEach(b => hookSteps(b, new Set())); };
+    if (!units.length) return stop(bestRun.blocks.length ? "Nie zostało już żadnych wolnych przedmiotów." : "Nie masz wolnych przedmiotów w tej kategorii.");
+    const noAffix = !C.hasP && !C.hasS;
+    let mode = store.bestMode || "both";
+    if ((mode === "p" && !C.hasP) || (mode === "s" && !C.hasS)) mode = "both";
+    const withBases = noAffix || (!ringLike() && !!store.bestBases);
+    const t0 = performance.now();
+    const groups = bestCraft(C, units, mode, withBases);
+    const ms = Math.round(performance.now() - t0);
+    if (!groups.length) return stop("Żaden z pozostałych przedmiotów nie ma afiksu, który liczy ten tryb.");
+    const what = noAffix ? "bazie" : mode === "p" ? "prefiksie" : mode === "s" ? "sufiksie" : "afiksach (poziom prefiksu + poziom sufiksu)";
+    const val = bestValue(C, mode, withBases);
+    const n = bestRun.blocks.length + 1;
+    const html = `<div class="bestrun">${n > 1 ? `<h3 class="sub-h">Kolejny przedmiot (${n}) · bez przedmiotów zużytych wyżej</h3>` : ""}<div class="note">Najlepszy wynik po ${what}${withBases && !noAffix ? ", baza rozstrzyga remisy" : ""}. Legendarne i zwykłe liczone osobno. <span class="note">(${ms} ms)</span></div>` +
+      groups.map(g => {
+        // the tiers this mode counts (the item shows each part's tier): one, or a sum of two
+        const tiersOf = it => { const t = noAffix ? [C.idxB(it) + 1] : [C.hasP && mode !== "s" ? C.idxP(it) : -1, C.hasS && mode !== "p" ? C.idxS(it) : -1].filter(v => v >= 0);
+          return t.length > 1 ? `poziomy ${t[0]} + ${t[1]} = ${t[0] + t[1]}` : `poziom ${t[0]}`; };
+        const head = `<h3 class="sub-h">${g.leg ? "Legendarne" : "Zwykłe"} · ${PRZ(g.count)}</h3>`;
+        if (!g.best) return `${head}<div class="verdict bad">Żadne połączenie tych przedmiotów nie da nic lepszego od tego, co wchodzi. Nie ma tu czego robić.</div>`;
+        const ownedBetter = val(g.topOwned) > val(g.best.it);
+        return `${head}
+          <div class="verdict ok">Najlepszy do zrobienia: ${POL(g.steps)} ${pl(g.steps, "da", "dadzą", "da")} ${itemHTML(g.best.it)} (${tiersOf(g.best.it)}).</div>
+          ${ownedBetter ? `<div class="note">Masz już lepszy: ${itemHTML(g.topOwned)} (${tiersOf(g.topOwned)}), ale nic, co masz, go nie ulepszy.</div>` : ""}
+          <div class="trackbox">${routeBody(g.tree, { track: true })}</div>`;
+      }).join("") + `</div>`;
+    let any = false;
+    for (const g of groups) if (g.best) { any = true; walk(g.tree, t => { if (t.leaf) { const k = key(t.it); bestRun.used.set(k, (bestRun.used.get(k) || 0) + 1); } }); }
+    bestRun.blocks.push(html);
+    out.innerHTML = bestRun.blocks.join("") + (any ? `<div class="row"><button class="btn primary" id="bestMore">Wytwórz kolejny</button><span class="note">Odkłada przedmioty zużyte powyżej i szuka najlepszego z reszty.</span></div>` : "");
+    out.querySelectorAll(".trackbox").forEach(b => hookSteps(b, new Set()));
+    if ($("bestMore")) $("bestMore").onclick = () => { $("bestMore").disabled = true; setTimeout(runBest, 30); };
+  }
+
+  // ---- trash upgrade ----
+  // Lowest-scoring item first: pair it with the cheapest partner that gives a big upgrade
+  // (both affixes higher), else a small one (one higher, the other no worse). Repeat with the
+  // results until nothing upgrades. Never loses an affix (except in single-affix modes).
+  // Kinds of upgrade, best first: 3 = big (both affixes up), 2 = small (one affix up, the
+  // other no worse; in single-affix modes simply "upgrade"), 1 = base upgrade (base up, the
+  // affixes that count no worse; only when bases are included).
+  function trashPlan(C, units, mode, withBases) {
+    const noAffix = !C.hasP && !C.hasS;
+    const pT = it => C.idxP(it), sT = it => C.idxS(it), bT = it => C.idxB(it);
+    const cnt = it => (it.p ? 1 : 0) + (it.s ? 1 : 0);
+    // value of an item: with bases off, only its affixes count
+    const val = it => noAffix ? bT(it) + 1 : mode === "p" ? 3 * pT(it) + (withBases ? bT(it) + 1 : 0) : mode === "s" ? 3 * sT(it) + (withBases ? bT(it) + 1 : 0) : 3 * (pT(it) + sT(it)) + (withBases ? bT(it) + 1 : 0);
+    let uid = 0;
+    let pool = units.filter(it => noAffix ? true : mode === "p" ? it.p : mode === "s" ? it.s : (it.p || it.s))
+      .map(it => ({ it, id: ++uid, sc: val(it), k: key(it), from: 0 }));
+    const kind = (a, b, r) => {
+      const baseUp = bT(r) > Math.max(bT(a), bT(b));
+      if (noAffix) return baseUp ? 2 : 0;
+      if (mode === "p" || mode === "s") {
+        const T = mode === "p" ? pT : sT, has = mode === "p" ? r.p : r.s;
+        if (!has) return 0;
+        if (T(r) > Math.max(T(a), T(b))) return 2;
+        if (withBases && baseUp && T(r) >= Math.max(T(a), T(b))) return 1;
+        return 0;
+      }
+      if (cnt(r) < Math.max(cnt(a), cnt(b))) return 0;
+      const mp = Math.max(pT(a), pT(b)), ms = Math.max(sT(a), sT(b));
+      const upP = r.p && pT(r) > mp, upS = r.s && sT(r) > ms;
+      if (upP && upS) return 3;
+      if ((upP && sT(r) >= ms) || (upS && pT(r) >= mp)) return 2;
+      if (withBases && baseUp && pT(r) >= mp && sT(r) >= ms) return 1;
+      return 0;
+    };
+    const steps = [];
+    for (let guard = 0; guard < 500; guard++) {
+      pool.sort((a, b) => a.sc - b.sc || (a.k < b.k ? -1 : 1));
+      let done = false;
+      for (const x of pool) {
+        let best = null;
+        for (const y of pool) {
+          if (y === x || y.k === x.k) continue;
+          const r = C.combItem(x.it, y.it); if (!r) continue;
+          const kd = kind(x.it, y.it, r); if (!kd) continue;
+          if (!best || kd > best.kd || (kd === best.kd && y.sc < best.y.sc)) best = { y, r, kd };
+        }
+        if (best) {
+          const res = { it: best.r, id: ++uid, sc: val(best.r), k: key(best.r), from: steps.length + 1 };
+          // single-affix modes: flag a step that sacrifices an affix higher than the one it improves
+          let warn = null;
+          if (mode === "p" || mode === "s") {
+            const up = mode === "p" ? pT(best.r) : sT(best.r);
+            const other = mode === "p" ? sT : pT, name = mode === "p" ? "sufiks" : "prefiks";
+            const lostFrom = [x.it, best.y.it].filter(i => other(i) > other(best.r) && other(i) >= up).sort((a, b) => other(b) - other(a))[0];
+            if (lostFrom) {
+              const was = mode === "p" ? lostFrom.s : lostFrom.p, now = mode === "p" ? best.r.s : best.r.p;
+              warn = `Poświęca ${name} ${was} (poz. ${other(lostFrom)})${now ? `, który spada do ${now} (poz. ${other(best.r)})` : ", który przepada"}, żeby osiągnąć ${mode === "p" ? "prefiks" : "sufiks"} poz. ${up}. Zablokuj ten przedmiot, żeby go chronić.`;
+            }
+          }
+          steps.push({ a: x, b: best.y, r: res, kd: best.kd, big: mode === "both" && best.kd === 3, warn });
+          pool = pool.filter(z => z !== x && z !== best.y); pool.push(res);
+          done = true; break;
+        }
+      }
+      if (!done) break;
+    }
+    return steps;
+  }
+  function renderTrashSeg() {
+    const C = compile(), noAffix = !C.hasP && !C.hasS;
+    let tm = store.trashMode || "both";
+    if ((tm === "p" && !C.hasP) || (tm === "s" && !C.hasS)) tm = "both";
+    if (!(C.hasP && C.hasS) && tm === "both" && !noAffix) tm = C.hasP ? "p" : "s";
+    $("trashSeg").hidden = noAffix;
+    $("trashSeg").querySelectorAll("button").forEach(b => { b.setAttribute("aria-pressed", b.dataset.v === tm); b.hidden = (b.dataset.v === "p" && !C.hasP) || (b.dataset.v === "s" && !C.hasS) || (b.dataset.v === "both" && !(C.hasP && C.hasS)); });
+    $("trashNote").textContent = noAffix ? "Broń palna nie ma afiksów, więc ulepszana jest tylko baza." : tm === "both" ? "Nigdy nie traci afiksu." : `Liczy się tylko ${tm === "p" ? "prefiks" : "sufiks"}; utrata ${tm === "p" ? "sufiksu" : "prefiksu"} jest dozwolona.`;
+    return tm;
+  }
+  $("trashSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.trashMode = b.dataset.v; persist(); renderTrashSeg(); };
+  $("trashBtn").onclick = () => {
+    const out = $("result"), C = compile(), mode = renderTrashSeg();
+    const units = byRarity(freeUnits(), store.trashRar || "both");
+    const steps = trashPlan(C, units, mode, (!!store.trashBases && !ringLike()) || (!C.hasP && !C.hasS));
+    if (!steps.length) { out.innerHTML = `<div class="verdict bad">W tym trybie nie da się nic ulepszyć z wolnych przedmiotów.</div>`; return; }
+    const before = units.length, after = before - steps.length;
+    const side = x => `<div>${itemHTML(x.it)}${x.from ? `<span class="tag">z kroku ${x.from}</span>` : ""}</div>`;
+    out.innerHTML = `
+      <div class="verdict ok">${POL(steps.length)}: z ${before} wolnych przedmiotów zostanie ${after}.${mode === "both" ? ` Duże ulepszenia (oba afiksy w górę): ${steps.filter(s => s.big).length}.` : ""}</div>
+      ${steps.some(s => s.warn) ? `<div class="verdict bad">${(n => n === 1 ? "1 krok poświęca afiks co najmniej tak wysoki jak ulepszany. Oznaczono go poniżej." : `${n} ${pl(n, "krok", "kroki", "kroków")} poświęca afiks co najmniej tak wysoki jak ulepszany. Oznaczono je poniżej.`)(steps.filter(s => s.warn).length)}</div>` : ""}
+      <h3 class="sub-h">Krok po kroku <span class="progress note"></span></h3>
+      <ol class="steps track">${steps.map((s, i) => `<li data-step="${i + 1}" class="${s.warn ? "warnstep " : ""}${s.r.from && !steps.slice(i + 1).some(q => q.a.id === s.r.id || q.b.id === s.r.id) ? "final" : ""}"><div class="combo">
+        ${side(s.a)}<div class="plus">+</div>${side(s.b)}<div class="arrow">daje · ${s.kd === 1 ? "ulepszenie bazy" : mode === "both" ? (s.kd === 3 ? "duże ulepszenie" : "małe ulepszenie") : "ulepszenie"}</div><div>${itemHTML(s.r.it)}</div>${s.warn ? `<div class="warnmsg">${esc(s.warn)}</div>` : ""}</div><label class="donechk"><input type="checkbox" data-done="${i + 1}"> Zrobione</label></li>`).join("")}</ol>
+      <div class="row"><button class="btn primary" id="applyTrash">Zastosuj w ekwipunku</button><span class="note">Usuwa zużyte przedmioty i dodaje wyniki.</span></div>`;
+    hookSteps(out, new Set());
+    $("applyTrash").onclick = () => {
+      const s = slot();
+      for (const st of steps) { invRemove(s, st.a.k); invRemove(s, st.b.k); invAdd(s, st.r.it); }
+      s.example = false; persist(); refresh();
+      out.innerHTML = `<div class="verdict ok">Ekwipunek zaktualizowany: wykonano ${POL(steps.length)}.</div>`;
+    };
+  };
+
+  // ---- plans ----
+  // inventory, auction list and plans all depend on which items are free, so they refresh together
+  function refresh() { renderInv(); renderAuction(); renderPlans(); renderShop(); renderSetSums(); }
+
+  // ---- settings: every switch in one panel; each view shows a one-line summary of what applies ----
+  const basesNA = () => { const C = compile(); return !C.hasP && !C.hasS ? "broń palna: zawsze liczy się baza" : ringLike() ? "w tej kategorii bazy się nie liczą" : ""; };
+  const SETTINGS = [
+    { g: "Szukanie ścieżki", k: "noOver", def: true, label: "Nie zużywaj lepszych niż cel", note: "Przedmioty z afiksem wyższym niż w celu są używane tylko wtedy, gdy bez nich nie ma żadnej ścieżki.", sum: v => `lepsze niż cel: <b>${v ? "tylko w ostateczności" : "dozwolone"}</b>` },
+    { g: "Szukanie ścieżki", k: "deep", def: false, label: "Głębokie szukanie", note: "Sprawdza większe grupy przedmiotów. Trwa do 15 s; można je przerwać przyciskiem Anuluj. Nie dotyczy Najtańszej.", sum: v => `głębokie szukanie: <b>${v ? "wł." : "wył."}</b>` },
+    { g: "Szukanie ścieżki", k: "depth", def: 5, num: [1, 8], label: "Głębokość drzewa w Najtańszej", note: "Ile poziomów połączeń w dół od celu (1–8). Więcej = dłuższe ścieżki z tańszych przedmiotów.", sum: v => `głębokość: <b>${v}</b>` },
+    { g: "Aukcja", k: "affordOnly", def: false, label: "Tylko na co mnie stać", note: "Pomija oferty droższe niż twoja kasa. Oferty z ceną „brak” zostają.", sum: v => `tylko na co mnie stać: <b>${v ? "tak" : "nie"}</b>` },
+    { g: "Najlepszy możliwy", k: "bestBases", def: false, label: "Uwzględnij bazy", note: "Wyłączone: liczą się tylko afiksy. Włączone: baza rozstrzyga remisy.", na: basesNA, sum: v => `bazy: <b>${v ? "rozstrzygają remisy" : "nie liczą się"}</b>` },
+    { g: "Przeróbka złomu", k: "trashBases", def: false, label: "Uwzględnij bazy", note: "Wyłączone: liczą się tylko afiksy. Włączone: gdy afiksów nie da się ulepszyć, próbuje ulepszyć bazę.", na: basesNA, sum: v => `bazy: <b>${v ? "ulepszane, gdy afiksy nie mogą" : "nie liczą się"}</b>` },
+  ];
+  const setVal = d => store[d.k] ?? d.def;
+  const setDef = k => SETTINGS.find(d => d.k === k);
+  function renderSettings() {
+    const groups = [...new Set(SETTINGS.map(d => d.g))];
+    $("setList").innerHTML = groups.map(g => `<div class="setgrp"><h3>${g}</h3>${SETTINGS.filter(d => d.g === g).map(d => {
+      const na = d.na ? d.na() : "", v = setVal(d);
+      const input = d.num ? `<input type="number" min="${d.num[0]}" max="${d.num[1]}" value="${v}" data-set="${d.k}">` : `<input type="checkbox" data-set="${d.k}"${v ? " checked" : ""}${na ? " disabled" : ""}>`;
+      return `<label class="setrow${na ? " na" : ""}">${input}<b>${d.label}</b><span class="note">${d.note}${na ? ` <i>Teraz nie dotyczy (${catName(catIdx)}: ${na}).</i>` : ""}</span></label>`;
+    }).join("")}</div>`).join("");
+    $("setList").querySelectorAll("[data-set]").forEach(inp => inp.onchange = () => {
+      const d = setDef(inp.dataset.set);
+      if (d.num) { const v = Math.max(d.num[0], Math.min(d.num[1], Math.round(+inp.value) || d.def)); inp.value = v; store[d.k] = v; }
+      else store[d.k] = inp.checked;
+      persist();
+      if (d.k === "affordOnly") refresh(); else renderSetSums();
+    });
+  }
+  function renderSetSums() {
+    const line = (id, keys) => {
+      const el = $(id); if (!el) return;
+      const parts = keys.map(setDef).map(d => { const na = d.na ? d.na() : ""; return na ? na : d.sum(setVal(d)); });
+      el.innerHTML = `Ustawienia: ${parts.join(" · ")}<button class="linkbtn" data-goset>Zmień</button>`;
+      el.querySelector("[data-goset]").onclick = () => setView("settings");
+    };
+    line("findSet", (store.mode || "optimal") === "cheap" ? ["noOver", "depth"] : ["noOver", "deep"]);
+    line("aucSet", ["affordOnly"]); line("bestSet", ["bestBases"]); line("trashSet", ["trashBases"]);
+  }
+  const LOCK_SVG = on => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"${on ? ' fill="currentColor" fill-opacity=".3"' : ""}/><path d="${on ? "M8 11V7a4 4 0 0 1 8 0v4" : "M8 11V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
+  const lockIcon = (p, i) => `<button class="lockico${p.off ? "" : " on"}" data-toggle="${i}" title="${p.off ? "Odblokowany: nic nie rezerwuje. Kliknij, żeby zablokować." : "Zablokowany: rezerwuje przedmioty. Kliknij, żeby odblokować."}" aria-label="${p.off ? "Zablokuj plan" : "Odblokuj plan"}" aria-pressed="${!p.off}">${LOCK_SVG(!p.off)}</button>`;
+  function renderPlans() {
+    const s = slot(), A = alloc(), list = $("planList");
+    $("planCount").textContent = s.plans.length ? `${s.plans.length}` : "";
+    if (!s.plans.length) { list.innerHTML = `<li class="empty">Brak planów. Znajdź ścieżkę i zapisz ją jako plan, żeby zarezerwować przedmioty.</li>`; return; }
+    const pill = st => st === "off" ? `<span class="pill">Odblokowany</span>` : st === "ready" ? `<span class="pill ok">Gotowy</span>` : st === "broken" ? `<span class="pill bad">Zepsuty</span>` : st === "buy" ? `<span class="pill aucp">Kup na aukcji</span>` : `<span class="pill warn">Czeka</span>`;
+    list.innerHTML = s.plans.map((p, i) => {
+      const st = A.status[i], need = p.missing.length - st.found.filter(Boolean).length;
+      return `<li><div class="plan-main"><span class="namerow">${pill(st.state)} ${itemHTML(p.result)}${lockIcon(p, i)}</span><div class="note">${st.state === "off" ? "Nic nie rezerwuje. Zablokuj, żeby znów zarezerwować przedmioty." : st.state === "broken" ? "Części zarezerwowanych przedmiotów nie ma już w ekwipunku ani na liście aukcji." : need ? `Czeka na ${PRZ(need)}.` : st.toBuy ? `Kup ${PRZ(st.toBuy)} z aukcji, potem ${POL(p.steps)}.` : `${POL(p.steps)}, wszystko pod ręką.`}${(p.done || []).length ? ` · zrobione ${p.done.length}/${p.steps}` : ""}</div></div>
+        <div class="row"><button class="btn small" data-view="${i}">Pokaż</button><button class="btn small ghost" data-del="${i}">Usuń</button></div></li>`;
+    }).join("");
+    list.querySelectorAll("[data-view]").forEach(b => b.onclick = () => viewPlan(+b.dataset.view));
+    list.querySelectorAll("[data-toggle]").forEach(b => b.onclick = () => { const p = s.plans[+b.dataset.toggle]; p.off = !p.off; persist(); refresh(); });
+    list.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { s.plans.splice(+b.dataset.del, 1); persist(); refresh(); $("result").innerHTML = ""; });
+  }
+  function viewPlan(i) {
+    const s = slot(), p = s.plans[i], st = alloc().status[i], out = $("result");
+    const head = st.state === "off" ? `<div class="verdict">Plan odblokowany: nie rezerwuje przedmiotów na ${itemHTML(p.result)}. Zablokuj go w Planach, żeby znów je zarezerwować.</div>` : st.state === "buy" ? `<div class="verdict miss">Kup ${PRZ(st.toBuy)} z aukcji (niebieskie w drzewie) na ${itemHTML(p.result)}. Potem oznacz je jako Kupione w Przedmiotach z aukcji.</div>` : st.state === "ready" ? `<div class="verdict ok">Plan gotowy: wszystko na ${itemHTML(p.result)} jest w ekwipunku.</div>`
+      : st.state === "broken" ? `<div class="verdict bad">Plan zepsuty: części przedmiotów na ${itemHTML(p.result)} już nie ma. Odblokuj go i poszukaj ponownie.</div>`
+      : (n => `<div class="verdict miss">Czeka na ${PRZ(n)} do ${itemHTML(p.result)}.</div>`)(p.missing.length - st.found.filter(Boolean).length);
+    const foundList = p.missing.map((m, j) => st.found[j] ? `<li>${itemHTML(fromKey(st.found[j]))} <span class="note">znaleziony w ekwipunku jako: ${lookFor(m)}</span></li>` : "").join("");
+    out.innerHTML = `${head}<div class="note">Cel: ${esc(p.target)}</div>
+      ${foundList ? `<h3 class="sub-h">Brakujące, które już masz</h3><ul class="shop">${foundList}</ul>` : ""}
+      ${routeBody(p.tree, { usedLabel: "Zarezerwowane przedmioty", track: true })}
+      <div class="row" id="craftRow">${st.state === "ready" || (p.done || []).length >= p.steps ? `<button class="btn primary" id="craftPlan">Oznacz jako zrobione</button><span class="note">Usuwa przedmioty planu i dodaje ${esc(itemText(p.result))}.</span>` : ""}</div>`;
+    hookSteps(out, new Set(p.done || []), d => {
+      p.done = [...d]; persist(); renderPlans();
+      // all steps ticked: offer to finish the plan
+      if (d.size >= p.steps && !$("craftPlan")) viewPlan(i);
+    });
+    if ($("craftPlan")) $("craftPlan").onclick = () => {
+      p.leaves.forEach(([k, c, src]) => { for (let i = 0; i < c; i++) { const ai = src === "a" ? cheapestListing(s, k) : -1; if (ai >= 0) aucTake(s, ai); else invRemove(s, k); } });
+      st.found.forEach(k => k && invRemove(s, k));
+      invAdd(s, p.result);
+      s.example = false; s.plans.splice(i, 1); persist(); refresh();
+      out.innerHTML = `<div class="verdict ok">Zrobione. ${itemHTML(p.result)} jest teraz w ekwipunku.</div>`;
+    };
+  }
+
+  // rarity filter shared by highest craft and trash upgrade: both, legendary only, common only
+  const byRarity = (units, r) => r === "leg" ? units.filter(u => u.l) : r === "com" ? units.filter(u => !u.l) : units;
+  const paintRar = (id, v) => $(id).querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === v));
+  $("bestRar").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.bestRar = b.dataset.v; persist(); paintRar("bestRar", b.dataset.v); };
+  $("trashRar").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.trashRar = b.dataset.v; persist(); paintRar("trashRar", b.dataset.v); };
+  function renderBestCtl() {
+    paintRar("bestRar", store.bestRar || "both"); paintRar("trashRar", store.trashRar || "both");
+    const C = compile(), noAffix = !C.hasP && !C.hasS;
+    let m = store.bestMode || "both";
+    if ((m === "p" && !C.hasP) || (m === "s" && !C.hasS)) m = "both";
+    $("bestSeg").hidden = noAffix;
+    $("bestSeg").querySelectorAll("button").forEach(b => { b.setAttribute("aria-pressed", b.dataset.v === m); b.hidden = (b.dataset.v === "p" && !C.hasP) || (b.dataset.v === "s" && !C.hasS); });
+  }
+  $("bestSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.bestMode = b.dataset.v; persist(); renderBestCtl(); };
+  // ---- shopping list across locked plans ----
+  function renderShop() {
+    const s = slot(), A = alloc(), groups = [];
+    let n = 0, sum = 0, aucN = 0;
+    s.plans.forEach((p, i) => {
+      const st = A.status[i];
+      if (!st || st.state === "off" || st.state === "broken") return;
+      const items = [];
+      if (st.toBuy) walk(p.tree, t => { if (t.auction) { items.push(aucLi(t)); sum += payOf(t); aucN++; } });
+      p.missing.forEach((m, j) => { if (!st.found[j]) items.push(missLi(m)); });
+      if (items.length) { n += items.length; groups.push(`<div class="shopgrp"><div class="note">Do planu: ${itemHTML(p.result)}</div><ul class="shop">${items.join("")}</ul></div>`); }
+    });
+    const tot = aucN ? aucTotalHTML(sum) : "";
+    $("shopList").innerHTML = groups.length ? groups.join("") + tot : `<div class="empty">Nic do kupienia. Brakujące i aukcyjne przedmioty z zablokowanych planów pojawią się tutaj.</div>`;
+    $("shopCount").textContent = n || "";
+  }
+
+  // ---- layout: views, tabs, paste bar ----
+  const VIEWS = { find: "vTarget", manual: "vTarget", best: "vBest", trash: "vTrash", shop: "vShop", plans: "vPlans", settings: "vSettings" };
+  function setView(v, keepResult) {
+    if (!VIEWS[v]) v = "find";
+    if (!keepResult) cancelSearch();
+    // Ustawienia remembers where you came from, for its Wróć button
+    if (v === "settings" && store.view && store.view !== "settings") store.prevView = store.view;
+    store.view = v; persist();
+    for (const id of new Set(Object.values(VIEWS))) $(id).hidden = id !== VIEWS[v];
+    if (v === "settings") renderSettings();
+    document.querySelectorAll(".navlist [data-view]").forEach(b => { b.classList.toggle("on", b.dataset.view === v); b.setAttribute("aria-current", b.dataset.view === v ? "page" : "false"); });
+    const isMan = v === "manual";
+    $("tgtTitle").textContent = isMan ? "Ręczny plan" : "Szukanie ścieżki";
+    $("findBtn").hidden = isMan; $("manBtn").hidden = !isMan; $("manNote").hidden = !isMan;
+    if (!keepResult) $("result").innerHTML = "";
+    document.body.dataset.m = "view"; paintM();
+  }
+  // ---- phone layout: bottom bar; Ekwipunek (with the paste bar) is its own screen ----
+  const MORE = ["best", "trash", "shop", "settings"];
+  function paintM() {
+    const m = document.body.dataset.m || "view", v = store.view || "find";
+    document.querySelectorAll(".mnav [data-mv]").forEach(b => {
+      const on = m === "inv" ? b.dataset.mv === "inv" : b.dataset.mv === v || (b.dataset.mv === "more" && MORE.includes(v));
+      b.classList.toggle("on", on); b.setAttribute("aria-current", on ? "page" : "false");
+    });
+    $("mMore").querySelectorAll("[data-mv]").forEach(b => b.classList.toggle("on", m !== "inv" && b.dataset.mv === v));
+  }
+  const closeMore = () => { $("mMore").hidden = true; document.querySelector('.mnav [data-mv="more"]').setAttribute("aria-expanded", "false"); };
+  document.querySelectorAll(".mnav [data-mv]").forEach(b => b.onclick = () => {
+    const v = b.dataset.mv;
+    if (v === "more") { const open = $("mMore").hidden; $("mMore").hidden = !open; b.setAttribute("aria-expanded", open); return; }
+    closeMore();
+    if (v === "inv") { document.body.dataset.m = "inv"; setTab(store.leftTab || "inv"); paintM(); }
+    else setView(v);
+    window.scrollTo(0, 0);
+  });
+  $("mMore").querySelectorAll("[data-mv]").forEach(b => b.onclick = () => { closeMore(); setView(b.dataset.mv); window.scrollTo(0, 0); });
+  document.addEventListener("click", e => { if (!$("mMore").hidden && !e.target.closest("#mMore, .mnav")) closeMore(); });
+  document.querySelectorAll(".navlist [data-view]").forEach(b => b.onclick = () => setView(b.dataset.view));
+  $("setBack").onclick = () => setView(store.prevView || "find");
+  const setWeld = open => { store.weldOpen = open; $("navWeld").setAttribute("aria-expanded", open); $("weldSub").hidden = !open; };
+  $("navWeld").onclick = () => { setWeld(!(store.weldOpen ?? true)); persist(); };
+  function setTab(t) {
+    store.leftTab = t;
+    $("paneInv").hidden = t !== "inv"; $("paneAuc").hidden = t !== "auc";
+    $("tabInv").setAttribute("aria-selected", t === "inv"); $("tabAuc").setAttribute("aria-selected", t === "auc");
+  }
+  $("tabInv").onclick = () => { setTab("inv"); persist(); };
+  $("tabAuc").onclick = () => { setTab("auc"); persist(); };
+  const setPasteMode = m => { store.pasteMode = m; $("pasteMode").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === m)); };
+  $("pasteMode").onclick = e => { const b = e.target.closest("button"); if (b) { setPasteMode(b.dataset.v); persist(); } };
+  $("pasteGo").onclick = () => {
+    const v = $("pasteBox").value; if (!v.trim()) return;
+    $("pasteOut").innerHTML = ""; $("aucOut").innerHTML = "";
+    if (store.pasteMode === "auc") { $("pasteBox").value = ""; readAuctionPaste(v); setTab("auc"); persist(); }
+    else { readInventoryPaste(v); $("pasteBox").classList.add("full"); }
+  };
+  $("pasteBox").addEventListener("input", () => { if (!$("pasteBox").value) $("pasteBox").classList.remove("full"); });
+
+  // ---- tree canvas: drag to move, + / − / fit buttons, Ctrl + wheel to zoom ----
+  function canvasify(sc) {
+    sc.dataset.cv = "1";
+    const tree = sc.querySelector(".tree"); if (!tree) return;
+    const w = parseFloat(tree.style.width) || 200, h = parseFloat(tree.style.height) || 80;
+    sc.classList.add("canvas");
+    const sizer = document.createElement("div"); sizer.className = "sizer"; tree.replaceWith(sizer); sizer.appendChild(tree);
+    const wrap = document.createElement("div"); wrap.className = "canvas-wrap"; sc.replaceWith(wrap); wrap.appendChild(sc);
+    let z = 1;
+    const apply = () => { tree.style.transform = `scale(${z})`; sizer.style.width = w * z + "px"; sizer.style.height = h * z + "px"; };
+    const clamp = v => Math.min(2, Math.max(.3, v));
+    const fit = () => { z = clamp(Math.min(1, (sc.clientWidth - 50) / w)); apply(); };
+    wrap.insertAdjacentHTML("beforeend", `<div class="zoombar"><button type="button" aria-label="Przybliż">+</button><button type="button" aria-label="Oddal">−</button><button type="button" aria-label="Dopasuj">⤢</button></div><div class="zoomhint">Przeciągnij, żeby przesunąć · Ctrl + kółko: zoom</div>`);
+    const [bp, bm, bf] = wrap.querySelectorAll(".zoombar button");
+    bp.onclick = () => { z = clamp(z * 1.2); apply(); }; bm.onclick = () => { z = clamp(z / 1.2); apply(); }; bf.onclick = fit;
+    sc.addEventListener("wheel", e => { if (!e.ctrlKey) return; e.preventDefault(); z = clamp(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1)); apply(); }, { passive: false });
+    let down = null, moved = false;
+    sc.addEventListener("pointerdown", e => { if (e.button !== 0) return; down = { x: e.clientX, y: e.clientY, l: sc.scrollLeft, t: sc.scrollTop }; moved = false; });
+    sc.addEventListener("pointermove", e => {
+      if (!down) return;
+      const dx = e.clientX - down.x, dy = e.clientY - down.y;
+      if (!moved && Math.hypot(dx, dy) < 5) return;
+      moved = true; sc.classList.add("drag");
+      sc.scrollLeft = down.l - dx; sc.scrollTop = down.t - dy;
+    });
+    const end = () => { down = null; sc.classList.remove("drag"); };
+    sc.addEventListener("pointerup", end); sc.addEventListener("pointerleave", end);
+    sc.addEventListener("click", e => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+    // a tree folded away (phones) has no width yet: size it when it is opened
+    const first = () => { if (w > sc.clientWidth - 50) fit(); else apply(); };
+    const box = wrap.closest("details");
+    if (box && !box.open) box.addEventListener("toggle", function once() { if (box.open) { first(); box.removeEventListener("toggle", once); } });
+    else first();
+  }
+  new MutationObserver(() => document.querySelectorAll("#result .tree-scroll:not([data-cv])").forEach(canvasify)).observe($("result"), { childList: true, subtree: true });
+
+  function renderAll(keepPaste) {
+    cancelSearch();
+    renderTabs();
+    picker($("addPicker"), { idPrefix: "add", mode: "own", qty: true });
+    refresh(); renderTarget(); renderTrashSeg(); renderBestCtl();
+    $("result").innerHTML = "";
+    if (!keepPaste) $("pasteOut").innerHTML = "";
+  }
+  // version 32: Optimal becomes the default route mode for everyone
+  if (!store.v32) { store.mode = "optimal"; store.v32 = 1; persist(); }
+  setWeld(store.weldOpen ?? true); setTab(store.leftTab || "inv"); setPasteMode(store.pasteMode || "inv");
+  renderAll();
+  setView(store.view || "find");
+})();

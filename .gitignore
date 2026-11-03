@@ -1,0 +1,5 @@
+node_modules/
+index-debug.html
+*.png
+!assets/**/*.png
+out*.txt

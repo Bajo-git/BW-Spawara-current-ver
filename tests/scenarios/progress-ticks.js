@@ -1,0 +1,23 @@
+const { chromium } = require('playwright'); const fs=require('fs');
+(async () => {
+  const b = await chromium.launch(); const pg = await b.newPage({ viewport: { width: 1440, height: 950 } }); await pg.addInitScript(() => { new MutationObserver(() => document.querySelectorAll('sup.tier').forEach(x => x.remove())).observe(document, { subtree: true, childList: true }); });
+  const errs=[]; pg.on('pageerror', e => errs.push(e.message));
+  await pg.route('**/*', r => r.request().url().startsWith('file:') ? r.continue() : r.abort());
+  await pg.goto('file://' + require('path').resolve(process.argv[2]));
+  const inv = JSON.parse(fs.readFileSync(require('path').join(__dirname, '..', 'fixtures', 'inv20.json')));
+  await pg.evaluate(([inv]) => localStorage.setItem('bw-forge-v2', JSON.stringify({ v32: 1, cat: 0, mode: 'fast', 'Głowa': { inv, auction: [], example: false, target: { p:'krwawy', b:'bandana', s:'adrenaliny', l:'1' }, plans: [] } })), [inv]);
+  await pg.reload(); await pg.click('#findBtn'); await pg.waitForFunction(() => { const x = document.querySelector('#result').innerText; return x && !/^Szukam/.test(x); });
+  await pg.check('[data-done="1"]');
+  console.log('progress:', await pg.innerText('.progress'), '| done li', await pg.$$eval('ol.steps li.done', l=>l.length), '| next', await pg.$eval('ol.steps li.next', l=>l.dataset.step), '| done cards', await pg.$$eval('.tcard.done', l=>l.length));
+  await pg.click('#lockPlan'); await pg.click('.navlist [data-view="plans"]');
+  console.log('plan row:', await pg.$eval('#planList li', l => l.innerText.replace(/\s+/g,' ')));
+  await pg.click('#planList [data-view="0"]');
+  console.log('plan view progress:', await pg.innerText('.progress'));
+  for (let i = 3; i <= 7; i++) await pg.check(`[data-done="${i}"]`);
+  console.log('after all:', await pg.innerText('.progress'), '| craft button', !!(await pg.$('#craftPlan')));
+  await pg.reload(); await pg.click('#planList [data-view="0"]');
+  console.log('after reload:', await pg.innerText('.progress'));
+  await pg.evaluate(() => document.querySelector('ol.steps').scrollIntoView());
+  await pg.screenshot({ path: require('path').join(require('os').tmpdir(), 'steps.png') });
+  console.log('errors', errs); await b.close();
+})();

@@ -7,6 +7,12 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 45 (2026-11-05)
+- Arkusze moved from the sidebar to the free space under the view panel (desktop); phones get one
+  small "Pokaż arkusze" button right under the view's main button (Więcej entry removed).
+- Table cells show the result's full name (no numbers); same part twice (A + A) is darker; clicking
+  a cell highlights every cell with the same result (others fade), clicking it again clears.
+
 ## Shipped in version 44 (2026-11-05)
 - Arkusz cheat sheet: the chosen category's combine tables (Bazy, Prefiksy, Sufiksy) as colour-coded
   miniatures in the sidebar under Ustawienia; a click opens the full table in a pop-up over the

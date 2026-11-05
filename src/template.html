@@ -379,15 +379,13 @@ details.treebox[open] > summary::before { content: "▾ "; }
   .mmore button.on { background: var(--sunk); color: var(--accent-hi); }
 }
 
-/* sheet cheat sheet: thumbnails in the sidebar, full tables in a dialog */
-.sheetside { margin-top: 18px; padding: 12px 10px 4px; border-top: 1px solid #2a1d1e; display: grid; gap: 8px; }
-.sheet-h { display: block; font: 700 .72rem var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
-.sheet-h span { color: var(--ink); }
-.sheetthumbs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-.sheetthumb { display: grid; gap: 4px; justify-items: center; min-width: 0; padding: 6px 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--sunk); color: var(--ink); font: 600 .7rem var(--body); cursor: pointer; }
+/* sheet cheat sheet: miniatures under the view panel, full tables in a dialog */
+.sheet-h { margin: 0; }
+.sheetthumbs { display: grid; grid-template-columns: repeat(3, minmax(0, 120px)); gap: 10px; }
+.sheetthumb { display: grid; gap: 6px; justify-items: center; min-width: 0; padding: 10px 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--sunk); color: var(--ink); font: 600 .82rem var(--body); cursor: pointer; }
 .sheetthumb:hover, .sheetthumb:focus-visible { border-color: var(--accent-hi); }
-.sheetthumb canvas { width: 42px; height: 42px; image-rendering: pixelated; border-radius: 3px; }
-.sheet-tip { margin: 0; font-size: .72rem; color: var(--muted); }
+.sheetthumb canvas { width: 72px; height: 72px; image-rendering: pixelated; border-radius: 4px; }
+.sheetbtn { display: none; }
 .sheetdlg { width: fit-content; min-width: min(640px, 96vw); max-width: 96vw; max-height: 92vh; padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); overflow: hidden; }
 .sheetdlg[open] { display: grid; grid-template-rows: auto auto 1fr auto; }
 .sheetdlg::backdrop { background: rgba(5, 3, 4, .78); }
@@ -407,19 +405,23 @@ table.sheet thead th span { writing-mode: vertical-rl; transform: rotate(180deg)
 table.sheet tbody th { left: 0; text-align: right; padding: 0 8px; border-right: 1px solid var(--line); }
 table.sheet thead th.corner { left: 0; z-index: 2; color: var(--muted); font-size: .7rem; text-align: right; padding-right: 8px; }
 table.sheet th sup.tier { color: var(--muted); }
-table.sheet td { min-width: 28px; height: 26px; text-align: center; padding: 0 2px; border: 1px solid rgba(10, 8, 9, .55); cursor: pointer; }
+table.sheet td { height: 26px; text-align: center; padding: 0 7px; white-space: nowrap; font: 600 .74rem var(--body); border: 1px solid rgba(10, 8, 9, .55); cursor: pointer; }
 table.sheet td.up { font-weight: 800; }
 table.sheet td.down { opacity: .5; }
-table.sheet td.diag { outline: 1px dashed rgba(255, 255, 255, .55); outline-offset: -3px; }
+table.sheet td.diag { filter: brightness(.5) saturate(.8); outline: 1px dashed rgba(255, 255, 255, .35); outline-offset: -3px; }
 table.sheet td.none { background: repeating-linear-gradient(45deg, #141011 0 3px, #0a0809 3px 6px); color: transparent; cursor: default; }
 table.sheet .hl { box-shadow: inset 0 0 0 999px rgba(255, 255, 255, .07); }
 table.sheet th.hl { color: var(--accent-hi); }
-table.sheet td.pick { outline: 2px solid #fff; outline-offset: -2px; opacity: 1; }
+table.sheet.picking td:not(.same) { opacity: .28; }
+table.sheet td.same { opacity: 1; outline: 2px solid #fff; outline-offset: -2px; }
+table.sheet td.pick { outline: 3px solid #fff; outline-offset: -3px; }
 table.sheet.k-prefix tbody th, table.sheet.k-prefix thead th:not(.corner) { color: var(--prefix); }
 table.sheet.k-suffix tbody th, table.sheet.k-suffix thead th:not(.corner) { color: var(--suffix); }
 .sheet-pick { padding: 10px 16px 14px; font-size: .9rem; min-height: 1.4em; }
 @media (max-width: 700px) {
-  .sheetside { display: none; }
+  section.panel.sheetpanel { background: none; border: 0; padding: 0; margin-top: -4px; box-shadow: none; }
+  .sheetpanel .sheet-h, .sheetpanel .sheetthumbs { display: none; }
+  .sheetbtn { display: inline-flex; align-items: center; justify-self: start; min-height: 0; height: 32px; padding: 0 12px; font-size: .82rem; color: var(--muted); }
   .sheetdlg { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; margin: 0; }
   .sheet-legend .ramp { width: 100px; }
 }
@@ -440,11 +442,6 @@ table.sheet.k-suffix tbody th, table.sheet.k-suffix thead th:not(.corner) { colo
       <button class="nav" data-view="plans"><span>Plany</span><span class="count" id="planCount"></span></button>
       <button class="nav" data-view="settings"><span>Ustawienia</span></button>
     </nav>
-    <section class="sheetside" aria-labelledby="sheetSideH">
-      <h2 class="sheet-h" id="sheetSideH">Arkusz · <span id="sheetCat"></span></h2>
-      <div class="sheetthumbs" id="sheetThumbs"></div>
-      <p class="sheet-tip">Kliknij tabelę, żeby ją powiększyć.</p>
-    </section>
     <div class="foot">Planer łączenia przedmiotów Bloodwars · dane z arkusza R21</div>
   </aside>
 
@@ -552,6 +549,13 @@ table.sheet.k-suffix tbody th, table.sheet.k-suffix thead th:not(.corner) { colo
           <h2 id="set-h">Ustawienia <small>Wspólne dla wszystkich kategorii, zapisane w tej przeglądarce</small></h2>
           <div id="setList"></div>
         </section>
+
+        <!-- the sheet's tables for this category: miniatures on wider screens, one small button on phones -->
+        <section class="panel sheetpanel" aria-labelledby="sheetSideH">
+          <h2 class="sheet-h" id="sheetSideH"><span>Arkusze · <span id="sheetCat"></span></span> <small>Tabele łączenia z arkusza R21. Kliknij, żeby powiększyć.</small></h2>
+          <div class="sheetthumbs" id="sheetThumbs"></div>
+          <button class="btn small sheetbtn" id="sheetOpen">Pokaż arkusze</button>
+        </section>
       </div>
     </div>
 
@@ -572,7 +576,7 @@ table.sheet.k-suffix tbody th, table.sheet.k-suffix thead th:not(.corner) { colo
 
   <!-- phone layout: bottom bar (hidden on wider screens) -->
   <div class="mmore" id="mMore" hidden>
-    <button data-mv="best">Najlepszy możliwy</button><button data-mv="trash">Przeróbka złomu</button><button data-mv="shop">Lista zakupów</button><button data-mv="settings">Ustawienia</button><button id="mSheet">Arkusz (tabele)</button>
+    <button data-mv="best">Najlepszy możliwy</button><button data-mv="trash">Przeróbka złomu</button><button data-mv="shop">Lista zakupów</button><button data-mv="settings">Ustawienia</button>
   </div>
   <nav class="mnav" aria-label="Widoki">
     <button data-mv="find"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><span>Szukaj</span></button>

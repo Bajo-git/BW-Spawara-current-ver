@@ -1079,6 +1079,7 @@ function makeEngine(DATA, store) {
   function renderSheetThumbs() {
     $("sheetCat").textContent = catName(catIdx);
     const tabs = sheetTabs();
+    $("sheetOpen").hidden = !tabs.length;
     $("sheetThumbs").innerHTML = tabs.map((x, i) => `<button class="sheetthumb" data-sheet="${i}" aria-label="Tabela: ${x.label}, ${esc(catName(catIdx))}"><canvas width="${x.t.parts.length}" height="${x.t.parts.length}"></canvas>${x.label}</button>`).join("");
     $("sheetThumbs").querySelectorAll("canvas").forEach((cv, i) => {
       const { k, t } = tabs[i], n = t.parts.length, g = cv.getContext("2d");
@@ -1098,7 +1099,7 @@ function makeEngine(DATA, store) {
     $("sheetLegend").innerHTML = `<span class="key">poz. 1 <span class="ramp" style="background:linear-gradient(90deg, ${ramp})"></span> poz. ${n}</span>
       <span class="key"><b>pogrubione:</b> wynik wyższy niż oba składniki</span>
       <span class="key" style="opacity:.6">przygaszone: wynik niższy niż lepszy składnik</span>
-      <span class="key"><span class="sw" style="outline:1px dashed #fff;outline-offset:-3px">·</span>${one} dwa razy</span>`;
+      <span class="key"><span class="sw" style="background:${sheetHeat(k, n - 1, n).bg};filter:brightness(.5);outline:1px dashed rgba(255,255,255,.35);outline-offset:-3px"></span>ciemne: ${one} dwa razy</span>`;
     let h = `<table class="sheet k-${k}"><thead><tr><th class="corner">wiersz + kolumna</th>${t.parts.map((_, c) => `<th scope="col" data-c="${c}"><span>${nm(c)}</span></th>`).join("")}</tr></thead><tbody>`;
     for (let r = 0; r < n; r++) {
       h += `<tr><th scope="row" data-r="${r}">${nm(r)}</th>`;
@@ -1106,26 +1107,31 @@ function makeEngine(DATA, store) {
         const v = t.m[r][c];
         if (v < 0) { h += `<td class="none" data-r="${r}" data-c="${c}" title="Nie łączą się">–</td>`; continue; }
         const col = sheetHeat(k, v, n), cls = [v > Math.max(r, c) ? "up" : v < Math.max(r, c) ? "down" : "", r === c ? "diag" : ""].filter(Boolean).join(" ");
-        h += `<td${cls ? ` class="${cls}"` : ""} data-r="${r}" data-c="${c}" data-v="${v}" style="background:${col.bg};color:${col.ink}" title="${esc(t.parts[r])} + ${esc(t.parts[c])} = ${esc(t.parts[v])}">${v + 1}</td>`;
+        h += `<td${cls ? ` class="${cls}"` : ""} data-r="${r}" data-c="${c}" data-v="${v}" style="background:${col.bg};color:${col.ink}" title="${esc(t.parts[r])} + ${esc(t.parts[c])} = ${esc(t.parts[v])} (poz. ${v + 1})">${esc(t.parts[v])}</td>`;
       }
       h += "</tr>";
     }
     $("sheetWrap").innerHTML = h + "</tbody></table>";
-    $("sheetPick").innerHTML = "Kliknij komórkę: wiersz + kolumna = wynik. Liczba w komórce to poziom wyniku.";
+    $("sheetPick").innerHTML = "Kliknij komórkę: wiersz + kolumna = wynik; podświetlą się wszystkie komórki z tym samym wynikiem.";
     $("sheetWrap").querySelector("table").onclick = e => {
-      const td = e.target.closest("td"); if (!td || td.classList.contains("none")) return;
+      const tb = e.currentTarget, td = e.target.closest("td");
+      const clear = () => { tb.classList.remove("picking"); tb.querySelectorAll(".hl, .pick, .same").forEach(x => x.classList.remove("hl", "pick", "same")); };
+      if (!td || td.classList.contains("none") || td.classList.contains("pick")) { clear(); $("sheetPick").innerHTML = "Kliknij komórkę: wiersz + kolumna = wynik; podświetlą się wszystkie komórki z tym samym wynikiem."; return; }
       const r = +td.dataset.r, c = +td.dataset.c, v = +td.dataset.v;
-      $("sheetWrap").querySelectorAll(".hl, .pick").forEach(x => x.classList.remove("hl", "pick"));
-      $("sheetWrap").querySelectorAll(`[data-r="${r}"], [data-c="${c}"]`).forEach(x => x.classList.add("hl"));
-      td.classList.add("pick");
+      clear();
+      // every cell with the same result, plus the picked cell's row and column headers
+      const same = tb.querySelectorAll(`td[data-v="${v}"]`);
+      same.forEach(x => x.classList.add("same"));
+      tb.querySelectorAll(`th[data-r="${r}"], th[data-c="${c}"]`).forEach(x => x.classList.add("hl"));
+      tb.classList.add("picking"); td.classList.add("pick");
       const span = (j, cls) => `<span class="item"><span class="${cls}">${esc(t.parts[j])}</span>${tierSup(j + 1)}</span>`, cl = k === "prefix" ? "p" : k === "suffix" ? "s" : "b";
-      $("sheetPick").innerHTML = `${span(r, cl)} + ${span(c, cl)} = ${span(v, cl)} <span class="note">· ${v > Math.max(r, c) ? "wyżej niż oba składniki" : v === Math.max(r, c) ? "tyle co lepszy składnik" : "niżej niż lepszy składnik"}</span>`;
+      $("sheetPick").innerHTML = `${span(r, cl)} + ${span(c, cl)} = ${span(v, cl)} <span class="note">· ${v > Math.max(r, c) ? "wyżej niż oba składniki" : v === Math.max(r, c) ? "tyle co lepszy składnik" : "niżej niż lepszy składnik"} · ${same.length} ${pl(same.length, "komórka daje", "komórki dają", "komórek daje")} ${esc(t.parts[v])}. Kliknij ją jeszcze raz, żeby wyczyścić.</span>`;
     };
     const dlg = $("sheetDlg"); if (!dlg.open) dlg.showModal();
   }
   $("sheetClose").onclick = () => $("sheetDlg").close();
   $("sheetDlg").addEventListener("click", e => { if (e.target === $("sheetDlg")) $("sheetDlg").close(); });
-  $("mSheet").onclick = () => { $("mMore").hidden = true; document.querySelector('.mnav [data-mv="more"]').setAttribute("aria-expanded", "false"); openSheet(0); };
+  $("sheetOpen").onclick = () => openSheet(0);
 
   function renderTabs() {
     renderSheetThumbs();

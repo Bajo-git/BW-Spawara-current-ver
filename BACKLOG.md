@@ -7,6 +7,14 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 44 (2026-11-05)
+- Arkusz cheat sheet: the chosen category's combine tables (Bazy, Prefiksy, Sufiksy) as colour-coded
+  miniatures in the sidebar under Ustawienia; a click opens the full table in a pop-up over the
+  page (tabs between tables, Esc / × / click outside closes). Cells show the result's tier on a
+  per-table colour ramp; bold = beats both inputs, faded = below the better input, dashed = same
+  part twice; clicking a cell spells out "wiersz + kolumna = wynik". Drawn from the app's own data,
+  so it always matches the engine. Phones: Więcej → Arkusz (tabele), full screen.
+
 ## Shipped in version 43 (2026-11-05)
 - Przeróbka złomu: a Podsumowanie box under the steps lists every item of yours that goes in and
   every final product (results not used by a later step), identical items counted together (×n).

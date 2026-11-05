@@ -1065,7 +1065,70 @@ function makeEngine(DATA, store) {
   $("aucClearAll").onclick = () => askClear("Usunąć przedmioty z aukcji we wszystkich kategoriach?", () => { DATA.forEach((_, ci) => { slot(ci).auction = []; }); });
 
   // ---- tabs ----
+  // ---- sheet cheat sheet: the chosen category's combine tables (thumbnails in the sidebar, full size
+  // in a dialog). Each cell is the result's tier, coloured on a ramp per table: dark = low, bright = high.
+  // Bold = the result beats both inputs; faded = it is below the better input; dashed = same item twice.
+  const SHEET_KINDS = [["base", "Bazy", "ta sama baza"], ["prefix", "Prefiksy", "ten sam prefiks"], ["suffix", "Sufiksy", "ten sam sufiks"]];
+  const SHEET_HUE = { base: [212, 262], prefix: [338, 8], suffix: [24, 52] };
+  const sheetTabs = () => SHEET_KINDS.filter(([k]) => DATA[catIdx].tables[k]).map(([k, label, one]) => ({ k, label, one, t: DATA[catIdx].tables[k] }));
+  const sheetHeat = (k, v, n) => {
+    const f = n > 1 ? v / (n - 1) : 1, [h0, h1] = SHEET_HUE[k];
+    const h = (h0 + ((h1 - h0 + 540) % 360 - 180) * f + 360) % 360, l = 17 + 47 * f, sat = 38 + 40 * f;
+    return { bg: `hsl(${h.toFixed(0)} ${sat.toFixed(0)}% ${l.toFixed(0)}%)`, ink: l > 46 ? "#140b0c" : "#f4efef" };
+  };
+  function renderSheetThumbs() {
+    $("sheetCat").textContent = catName(catIdx);
+    const tabs = sheetTabs();
+    $("sheetThumbs").innerHTML = tabs.map((x, i) => `<button class="sheetthumb" data-sheet="${i}" aria-label="Tabela: ${x.label}, ${esc(catName(catIdx))}"><canvas width="${x.t.parts.length}" height="${x.t.parts.length}"></canvas>${x.label}</button>`).join("");
+    $("sheetThumbs").querySelectorAll("canvas").forEach((cv, i) => {
+      const { k, t } = tabs[i], n = t.parts.length, g = cv.getContext("2d");
+      for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) { const v = t.m[r][c]; g.fillStyle = v < 0 ? "#0a0809" : sheetHeat(k, v, n).bg; g.fillRect(c, r, 1, 1); }
+    });
+    $("sheetThumbs").querySelectorAll("[data-sheet]").forEach(b => b.onclick = () => openSheet(+b.dataset.sheet));
+  }
+  function openSheet(i) {
+    const tabs = sheetTabs(); if (!tabs.length) return;
+    i = Math.max(0, Math.min(i, tabs.length - 1));
+    const { k, label, one, t } = tabs[i], n = t.parts.length, nm = j => `${esc(t.parts[j])}${tierSup(j + 1)}`;
+    $("sheetTitle").textContent = `Arkusz R21 · ${catName(catIdx)} · ${label}`;
+    $("sheetTabs").innerHTML = tabs.map((x, j) => `<button data-st="${j}" aria-pressed="${j === i}">${x.label}</button>`).join("");
+    $("sheetTabs").querySelectorAll("[data-st]").forEach(b => b.onclick = () => openSheet(+b.dataset.st));
+    const ramp = Array.from({ length: 8 }, (_, j) => sheetHeat(k, j * (n - 1) / 7, n).bg).join(", ");
+    const sw = (v, cls, txt) => { const c = sheetHeat(k, v, n); return `<span class="key"><span class="sw ${cls}" style="background:${c.bg};color:${c.ink}">${v + 1}</span>${txt}</span>`; };
+    $("sheetLegend").innerHTML = `<span class="key">poz. 1 <span class="ramp" style="background:linear-gradient(90deg, ${ramp})"></span> poz. ${n}</span>
+      <span class="key"><b>pogrubione:</b> wynik wyższy niż oba składniki</span>
+      <span class="key" style="opacity:.6">przygaszone: wynik niższy niż lepszy składnik</span>
+      <span class="key"><span class="sw" style="outline:1px dashed #fff;outline-offset:-3px">·</span>${one} dwa razy</span>`;
+    let h = `<table class="sheet k-${k}"><thead><tr><th class="corner">wiersz + kolumna</th>${t.parts.map((_, c) => `<th scope="col" data-c="${c}"><span>${nm(c)}</span></th>`).join("")}</tr></thead><tbody>`;
+    for (let r = 0; r < n; r++) {
+      h += `<tr><th scope="row" data-r="${r}">${nm(r)}</th>`;
+      for (let c = 0; c < n; c++) {
+        const v = t.m[r][c];
+        if (v < 0) { h += `<td class="none" data-r="${r}" data-c="${c}" title="Nie łączą się">–</td>`; continue; }
+        const col = sheetHeat(k, v, n), cls = [v > Math.max(r, c) ? "up" : v < Math.max(r, c) ? "down" : "", r === c ? "diag" : ""].filter(Boolean).join(" ");
+        h += `<td${cls ? ` class="${cls}"` : ""} data-r="${r}" data-c="${c}" data-v="${v}" style="background:${col.bg};color:${col.ink}" title="${esc(t.parts[r])} + ${esc(t.parts[c])} = ${esc(t.parts[v])}">${v + 1}</td>`;
+      }
+      h += "</tr>";
+    }
+    $("sheetWrap").innerHTML = h + "</tbody></table>";
+    $("sheetPick").innerHTML = "Kliknij komórkę: wiersz + kolumna = wynik. Liczba w komórce to poziom wyniku.";
+    $("sheetWrap").querySelector("table").onclick = e => {
+      const td = e.target.closest("td"); if (!td || td.classList.contains("none")) return;
+      const r = +td.dataset.r, c = +td.dataset.c, v = +td.dataset.v;
+      $("sheetWrap").querySelectorAll(".hl, .pick").forEach(x => x.classList.remove("hl", "pick"));
+      $("sheetWrap").querySelectorAll(`[data-r="${r}"], [data-c="${c}"]`).forEach(x => x.classList.add("hl"));
+      td.classList.add("pick");
+      const span = (j, cls) => `<span class="item"><span class="${cls}">${esc(t.parts[j])}</span>${tierSup(j + 1)}</span>`, cl = k === "prefix" ? "p" : k === "suffix" ? "s" : "b";
+      $("sheetPick").innerHTML = `${span(r, cl)} + ${span(c, cl)} = ${span(v, cl)} <span class="note">· ${v > Math.max(r, c) ? "wyżej niż oba składniki" : v === Math.max(r, c) ? "tyle co lepszy składnik" : "niżej niż lepszy składnik"}</span>`;
+    };
+    const dlg = $("sheetDlg"); if (!dlg.open) dlg.showModal();
+  }
+  $("sheetClose").onclick = () => $("sheetDlg").close();
+  $("sheetDlg").addEventListener("click", e => { if (e.target === $("sheetDlg")) $("sheetDlg").close(); });
+  $("mSheet").onclick = () => { $("mMore").hidden = true; document.querySelector('.mnav [data-mv="more"]').setAttribute("aria-expanded", "false"); openSheet(0); };
+
   function renderTabs() {
+    renderSheetThumbs();
     $("tabs").innerHTML = DATA.map((c, i) => `<button role="tab" id="tab-${i}" aria-selected="${i === catIdx}">${esc(catName(i))}</button>`).join("");
     $("tabs").querySelectorAll("button").forEach((b, i) => b.onclick = () => { catIdx = i; store.cat = i; persist(); renderAll(); });
   }

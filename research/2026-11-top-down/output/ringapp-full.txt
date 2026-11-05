@@ -1,0 +1,9 @@
+czarny latwosci · cheap · 122990+196418 przedm. · 55 ms · 2 brak., 1 kr.
+  klucze trasy: tree,cost,steps,missing,auction,over,L
+[cheap fast: kod 0, 0 s]
+czarny latwosci · optimal · 122990+196418 przedm. · 4210 ms · brak ścieżki
+[optimal fast: kod 0, 5 s]
+czarny latwosci · optimal głęboka · 122990+196418 przedm. · 8486 ms · brak ścieżki
+[optimal deep: kod 0, 8 s]
+
+[exited with code 0]

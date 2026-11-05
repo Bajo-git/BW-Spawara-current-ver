@@ -1,0 +1,30 @@
+
+runiczny korona magii (20 przedm.)
+  teraz: optymalna 2 brak./6 kr. (7473 ms), głęboka 2 brak./6 kr. (20344 ms), najtańsza 2 brak./1 kr. (12 ms)
+  wyczerpujące: 2 brak. (suma poziomów brakujących 66)/1 kr. · najlepsze po 1925 ms, pierwsze po 39 ms · sprawdzone w całości po 1925 ms, 9078437 węzłów
+  zużywa: 
+  brakuje: tygrysi^16 kapelusz^7 smoczej luski^16 | szturmowy^17 korona^10 mocy^17
+
+szturmowy kapelusz krwi (20 przedm.)
+  teraz: optymalna 1 brak./1 kr. (7313 ms), głęboka 1 brak./1 kr. (13837 ms), najtańsza 1 brak./1 kr. (13 ms)
+  wyczerpujące: 1 brak. (suma poziomów brakujących 24)/1 kr. · najlepsze po 47 ms, pierwsze po 22 ms · sprawdzone w całości po 47 ms, 42169 węzłów
+  zużywa: tygrysi^16 czapka^1 gladiatora^10
+  brakuje: szamanski^15 korona^10 kary^9
+
+tygrysie kilt unikow (12 przedm.)
+  teraz: optymalna 1 brak./1 kr. (3601 ms), głęboka 1 brak./1 kr. (743 ms), najtańsza 2 brak./2 kr. (0 ms)
+  wyczerpujące: 2 brak. (suma poziomów brakujących 28)/2 kr. · najlepsze po 0 ms, pierwsze po 0 ms · sprawdzone w całości po 1 ms, 1128 węzłów
+  zużywa: szamanskie^10 spodnie^2 silacza^4
+  brakuje: elfie^12 szorty^1 silacza^4 | kolcze^9 spodnica^3 narkomana^3
+
+demoniczny katana drakuli (19 przedm.)
+  teraz: optymalna 2 brak./2 kr. (5786 ms), głęboka 2 brak./2 kr. (10729 ms), najtańsza 2 brak./1 kr. (15 ms)
+  wyczerpujące: 2 brak. (suma poziomów brakujących 72)/1 kr. · najlepsze po 2519 ms, pierwsze po 36 ms · sprawdzone w całości po 2519 ms, 13737948 węzłów
+  zużywa: 
+  brakuje: zwinny^19 korbacz^5 bazyliszka^16 | antyczny^20 pila lancuchowa^10 samobojcy^17
+
+zabojczy korbacz krwi (19 przedm.)
+  teraz: optymalna 1 brak./3 kr. (5179 ms), głęboka 1 brak./3 kr. (13850 ms), najtańsza 2 brak./1 kr. (9 ms)
+  wyczerpujące: 2 brak. (suma poziomów brakujących 58)/1 kr. · najlepsze po 338 ms, pierwsze po 22 ms · sprawdzone w całości po 338 ms, 1979081 węzłów
+  zużywa: 
+  brakuje: opiekunczy^15 maczuga^1 podkowy^13 | jadowity^16 kosa^6 autokraty^14

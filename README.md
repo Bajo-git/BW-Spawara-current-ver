@@ -15,6 +15,7 @@ between the two (each browser and each address keeps its own).
 - **Rules:** the "Warsztat Anżeja rulebook" doc describes every rule the engine follows, with examples.
 - **Plans and decisions:** `BACKLOG.md`.
 - **Older versions and unused art:** the archive repo Bajo-git/BW-Spawara.
+- **Experiments:** `research/` (each folder has a RESULTS.md).
 
 ## Layout
 
@@ -59,6 +60,8 @@ Run from the repo root; page paths are relative.
 | `node tests/scenarios/cheap-mode.js index.html` | Najtańsza: depth setting, ladder, higher options |
 | `node tests/scenarios/topdown-engine.js index-debug.html` | Top-down engine at depths 3, 5 and 8 |
 | `node tests/scenarios/open-affix.js index.html` | Fixed and "dowolny" suffix give the same route; the full route with better items is offered, never consuming an item already better than the target |
+| `node tests/scenarios/cheap-strict.js index.html` | Najtańsza and its manual-plan 3-level search: every combine's ingredients strictly lower than its result (expect `0`) |
+| `node tests/scenarios/manual-cheap-deep.js index.html` | Manual plan with Najtańsza builds trees from your items 3 levels deep |
 | `node tests/scenarios/progress-ticks.js index.html` | Step ticks, progress, plans keep their ticks |
 | `node tests/worker.js index.html` | Search runs in the background worker, shows phases, Anuluj stops it, the manual plan's first fill too |
 | `node tests/invtools.js index.html` | Inventory search box and sort orders |

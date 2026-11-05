@@ -1,0 +1,29 @@
+krwawy bandana adrenaliny   teraz    : 2 brak., 0 twoich, 1 kr., głęb. 1 · 19 ms
+krwawy bandana adrenaliny   3 poziomy: 5 brak., 1 twoich, 5 kr., głęb. 5 · 37 ms
+      twoje: ozdobny kask ochrony
+      brakuje: smiercionosny czapka skorupy zolwia | elegancki kask narkomana | zlosliwy bandana wieszcza | smiercionosny korona gladiatora | bojowy opaska skorupy zolwia
+tygrysi opaska prekognicji  teraz    : 2 brak., 0 twoich, 1 kr., głęb. 1 · 4 ms
+tygrysi opaska prekognicji  3 poziomy: 5 brak., 1 twoich, 5 kr., głęb. 5 · 14 ms
+      twoje: bojowy opaska ochrony
+      brakuje: szamanski helm adrenaliny | krwawy kapelusz skorupy zolwia | magnetyczny kapelusz gladiatora | bojowy kapelusz wieszcza | smiercionosny bandana narkomana
+runiczny korona magii       teraz    : 2 brak., 0 twoich, 1 kr., głęb. 1 · 9 ms
+runiczny korona magii       3 poziomy: 2 brak., 0 twoich, 1 kr., głęb. 1 · 5 ms
+      twoje: 
+      brakuje: tygrysi kapelusz smoczej luski | szturmowy korona mocy
+szturmowy kapelusz krwi     teraz    : 1 brak., 1 twoich, 1 kr., głęb. 1 · 3 ms
+szturmowy kapelusz krwi     3 poziomy: 1 brak., 1 twoich, 1 kr., głęb. 1 · 4 ms
+      twoje: tygrysi czapka gladiatora
+      brakuje: szamanski korona kary
+tygrysie kilt unikow        teraz    : 2 brak., 1 twoich, 2 kr., głęb. 2 · 0 ms
+tygrysie kilt unikow        3 poziomy: 2 brak., 1 twoich, 2 kr., głęb. 2 · 0 ms
+      twoje: szamanskie spodnie silacza
+      brakuje: elfie szorty silacza | kolcze spodnica narkomana
+demoniczny katana drakuli   teraz    : 2 brak., 0 twoich, 1 kr., głęb. 1 · 3 ms
+demoniczny katana drakuli   3 poziomy: 7 brak., 2 twoich, 8 kr., głęb. 5 · 9 ms
+      twoje: opiekunczy topor dwureczny wladzy | napromieniowany lom zdobywcy
+      brakuje: przeklety maczuga krwi | przeklety lom podkowy | jadowity pika zemsty | zabojczy pika bazyliszka | swiecacy maczuga wladzy | jadowity halabarda zarazy | jadowity pila lancuchowa autokraty
+zabojczy korbacz krwi       teraz    : 2 brak., 0 twoich, 1 kr., głęb. 1 · 5 ms
+zabojczy korbacz krwi       3 poziomy: 3 brak., 1 twoich, 3 kr., głęb. 3 · 5 ms
+      twoje: napromieniowany lom zdobywcy
+      brakuje: opiekunczy maczuga autokraty | swiecacy lom wladzy | swiecacy pika zarazy
+składniki nie niższe niż wynik: 0

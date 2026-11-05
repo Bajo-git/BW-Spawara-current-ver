@@ -1,0 +1,27 @@
+najwyższy poziom startowy  1: nieosiągalny
+najwyższy poziom startowy  2: nieosiągalny
+najwyższy poziom startowy  3: nieosiągalny
+najwyższy poziom startowy  4: nieosiągalny
+najwyższy poziom startowy  5: nieosiągalny
+najwyższy poziom startowy  6: nieosiągalny
+najwyższy poziom startowy  7: nieosiągalny
+najwyższy poziom startowy  8: nieosiągalny
+najwyższy poziom startowy  9: nieosiągalny
+najwyższy poziom startowy 10: 6765 pierścieni, 18 poziomów, 2 rodzajów
+najwyższy poziom startowy 11: 4181 pierścieni, 17 poziomów, 2 rodzajów
+najwyższy poziom startowy 12: 2584 pierścieni, 16 poziomów, 2 rodzajów
+najwyższy poziom startowy 13: 1597 pierścieni, 15 poziomów, 2 rodzajów
+najwyższy poziom startowy 14: 987 pierścieni, 14 poziomów, 2 rodzajów
+najwyższy poziom startowy 15: 610 pierścieni, 13 poziomów, 2 rodzajów
+najwyższy poziom startowy 16: 377 pierścieni, 12 poziomów, 2 rodzajów
+najwyższy poziom startowy 17: 233 pierścieni, 11 poziomów, 2 rodzajów
+najwyższy poziom startowy 18: 144 pierścieni, 10 poziomów, 2 rodzajów
+najwyższy poziom startowy 19: 89 pierścieni, 9 poziomów, 2 rodzajów
+najwyższy poziom startowy 20: 55 pierścieni, 8 poziomów, 2 rodzajów
+najwyższy poziom startowy 21: 34 pierścieni, 7 poziomów, 2 rodzajów
+najwyższy poziom startowy 22: 21 pierścieni, 6 poziomów, 2 rodzajów
+najwyższy poziom startowy 23: 13 pierścieni, 5 poziomów, 2 rodzajów
+najwyższy poziom startowy 24: 8 pierścieni, 4 poziomów, 2 rodzajów
+najwyższy poziom startowy 25: 5 pierścieni, 3 poziomów, 2 rodzajów
+najwyższy poziom startowy 26: 3 pierścieni, 2 poziomów, 2 rodzajów
+najwyższy poziom startowy 27: 2 pierścieni, 1 poziomów, 2 rodzajów

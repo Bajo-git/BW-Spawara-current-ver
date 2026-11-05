@@ -1,6 +1,19 @@
 # Warsztat Anżeja backlog (queued for the next version)
 
-(empty — deep search and auction prices shipped in version 21; tier index everywhere shipped in version 38)
+- Optymalna "ugly loop" (user report, open, no fix chosen yet): the search finds a lower item that
+  could make an ingredient, but its partner needs an affix equal to the target's tier, which makes
+  the step pointless. Ideas to test: in manual-plan fills, cap missing partners strictly below the
+  target's tiers (today: at most equal); or prefer Najtańsza's strict rule for sub-fills.
+- Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
+  Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
+
+## Shipped in version 42 (2026-11-05)
+- Manual plan with Najtańsza: when the plain fill uses none of your items, missing items are
+  looked into 3 levels deep under the strict rule. The pair whose branch holds your items and
+  needs the fewest missing items replaces the missing one; branches without your items stay one
+  missing item; no route only if nothing of yours turns up.
+- Najtańsza search memo key fixed (depth 8 could mix the target up with a lower item).
+- Experiments saved in research/2026-11-top-down (exhaustive top-down search, ring ladders).
 
 ## Shipped in version 38 (2026-11-02)
 - Tier index everywhere: every prefix, base and suffix shows its tier number in small print in every

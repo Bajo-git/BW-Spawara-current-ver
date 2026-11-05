@@ -1,0 +1,6 @@
+par osiągalnych 470 · prefiksy 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 · sufiksy 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+czarny^28 latwosci^20 osiągalny? true
+czarny^28 powstaje z: sloneczny^25+czarny^28, pajeczy^26+jastrzebi^27, czarny^28+czarny^28
+jastrzebi^27 powstaje z: zdradziecki^23+czarny^28, tytanowy^24+jastrzebi^27, tytanowy^24+czarny^28, sloneczny^25+pajeczy^26, sloneczny^25+jastrzebi^27, pajeczy^26+czarny^28, jastrzebi^27+jastrzebi^27
+pajeczy^26 powstaje z: spaczony^21+czarny^28, plastikowy^22+jastrzebi^27, plastikowy^22+czarny^28, zdradziecki^23+pajeczy^26, zdradziecki^23+jastrzebi^27, tytanowy^24+sloneczny^25, tytanowy^24+pajeczy^26, pajeczy^26+pajeczy^26, jastrzebi^27+czarny^28
+z sufiksem latwosci^20 osiągalne prefiksy: 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28

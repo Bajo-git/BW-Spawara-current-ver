@@ -1,0 +1,7 @@
+poziom 22 (21 pierśc.) · wyczerpujące: 0 brak./20 kr. · najlepsze po 25 ms, pierwsze po 25 ms · sprawdzone w całości po 1956 ms, 22111724 węzłów
+poziom 20 (55 pierśc.) · wyczerpujące: 0 brak./54 kr. · najlepsze po 4 ms, pierwsze po 4 ms · PRZERWANE po 300001 ms, 3358863360 węzłów
+poziom 18 (144 pierśc.) · wyczerpujące: 0 brak./143 kr. · najlepsze po 2 ms, pierwsze po 2 ms · PRZERWANE po 300002 ms, 3105841152 węzłów
+poziom 15 (610 pierśc.) · wyczerpujące: 0 brak./609 kr. · najlepsze po 1 ms, pierwsze po 1 ms · PRZERWANE po 300002 ms, 2853371904 węzłów
+poziom 10 (6765 pierśc.) · wyczerpujące: 0 brak./6764 kr. · najlepsze po 6 ms, pierwsze po 6 ms · PRZERWANE po 300008 ms, 2941919232 węzłów
+
+[exited with code 0]

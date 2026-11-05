@@ -1,0 +1,12 @@
+
+krwawy bandana adrenaliny (20 przedm.)
+  teraz: optymalna 2 brak./2 kr. (7299 ms), głęboka 2 brak./2 kr. (20999 ms), najtańsza 2 brak./1 kr. (19 ms)
+  wyczerpujące: 2 brak. (suma poziomów brakujących 46)/1 kr. · najlepsze po 93 ms, pierwsze po 10 ms · sprawdzone w całości po 93 ms, 353629 węzłów
+  zużywa: 
+  brakuje: bojowy^10 obrecz^5 skorupy zolwia^12 | magnetyczny^11 korona^10 slonca^13
+
+tygrysi opaska prekognicji (20 przedm.)
+  teraz: optymalna 1 brak./2 kr. (5410 ms), głęboka 1 brak./2 kr. (17505 ms), najtańsza 2 brak./1 kr. (6 ms)
+  wyczerpujące: 2 brak. (suma poziomów brakujących 56)/1 kr. · najlepsze po 247 ms, pierwsze po 19 ms · sprawdzone w całości po 248 ms, 1304994 węzłów
+  zużywa: 
+  brakuje: kuloodporny^14 helm^3 slonca^13 | szamanski^15 korona^10 adrenaliny^14

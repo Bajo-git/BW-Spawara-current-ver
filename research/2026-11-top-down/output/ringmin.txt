@@ -1,0 +1,33 @@
+  maly cel szmaragdowy geniuszu 3 2 glebokosc 3
+  maly cel szmaragdowy madrosci 5 3 glebokosc 4
+  maly cel zloty madrosci 6 5 glebokosc 5
+  maly cel platynowy wilkolaka 13 9 glebokosc 6
+  maly cel rubinowy celnosci 34 23 glebokosc 8
+28 przebiegów, 470 stanów, 129 ms
+czarny pierscien latwosci: najmniej 319408 sztuk = 122990 × miedziany pierscien urody + 196418 × srebrny pierscien wystepku, głębokość drzewa 26
+  szmaragdowy^3 pierscien latwosci: 6765 (4181 + 2584)
+  zloty^4 pierscien latwosci: 9349 (5168 + 4181)
+  platynowy^5 pierscien latwosci: 6766 (4181 + 2585)
+  rubinowy^6 pierscien latwosci: 6767 (4181 + 2586)
+  dystyngowany^7 pierscien latwosci: 6768 (4181 + 2587)
+  przebiegly^8 pierscien latwosci: 6770 (4181 + 2589)
+  kardynalski^9 pierscien latwosci: 6773 (4181 + 2592)
+  elastyczny^10 pierscien latwosci: 6778 (4181 + 2597)
+  nekromancki^11 pierscien latwosci: 6786 (4181 + 2605)
+  gwiezdny^12 pierscien latwosci: 6799 (4181 + 2618)
+  niedzwiedzi^13 pierscien latwosci: 6820 (4181 + 2639)
+  twardy^14 pierscien latwosci: 6854 (4181 + 2673)
+  zwierzecy^15 pierscien latwosci: 6909 (4181 + 2728)
+  tanczacy^16 pierscien latwosci: 6998 (4181 + 2817)
+  archaiczny^17 pierscien latwosci: 7142 (4181 + 2961)
+  hipnotyczny^18 pierscien latwosci: 7375 (4181 + 3194)
+  diamentowy^19 pierscien latwosci: 7752 (4181 + 3571)
+  msciwy^20 pierscien latwosci: 8362 (4181 + 4181)
+  spaczony^21 pierscien latwosci: 12543 (5778 + 6765)
+  plastikowy^22 pierscien latwosci: 19308 (8362 + 10946)
+  zdradziecki^23 pierscien latwosci: 30254 (12543 + 17711)
+  tytanowy^24 pierscien latwosci: 47965 (19308 + 28657)
+  sloneczny^25 pierscien latwosci: 76622 (30254 + 46368)
+  pajeczy^26 pierscien latwosci: 122990 (47965 + 75025)
+  jastrzebi^27 pierscien latwosci: 198015 (76622 + 121393)
+  czarny^28 pierscien latwosci: 319408 (122990 + 196418)

@@ -462,7 +462,12 @@ function makeEngine(DATA, store) {
   // Ranking: fewest missing, fewest auction, lowest missing tiers, lowest owned tiers, fewest steps.
   // Item copies are not limited while searching; afterwards only the copies you own are marked as
   // owned and any extra use becomes a missing item.
-  function topDown(C, T, units, depth) {
+  // `force` (manual plan, used when the plain search finds nothing of yours): for the first `force`
+  // levels below the target a missing item is looked into further. Every pair that could make it is
+  // searched, and a pair whose branch holds at least one of your items replaces the missing item
+  // (fewest missing items first, as above), even when that branch needs more items. Branches where
+  // nothing of yours turns up stay a single missing item.
+  function topDown(C, T, units, depth, force = 0) {
     const NB = C.NB, NP = C.NP, NS = C.NS;
     const tab = (P, n) => { const r = []; for (let i = 0; i < n; i++) r.push([]); for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) { const m = C.fns[P](1 << a, 1 << b); if (m) r[topBit(m)].push([a, b]); } return r; };
     const pb = tab("b", NB), pp = tab("p", NP), ps = tab("s", NS);
@@ -478,23 +483,29 @@ function makeEngine(DATA, store) {
     for (const v of avail.values()) v.auc.sort(priceOrder);
     const cmp = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
     const memo = new Map(), deadline = performance.now() + 8000;
+    // n: how many of your items (owned or auction) the branch uses
     const solve = (b, p, s, l, d, root) => {
-      const key = sk(b, p, s, l) * 16 + d + (root ? 8 : 0);
+      const key = sk(b, p, s, l) * 32 + d * 2 + (root ? 1 : 0);
       let r = memo.get(key); if (r) return r;
-      r = { c: [1, 0, p + s, 0, 0], kind: "miss" };
-      if (root) r = { c: [99, 0, 0, 0, 0], kind: "none" };
+      r = { c: [1, 0, p + s, 0, 0], kind: "miss", n: 0 };
+      if (root) r = { c: [99, 0, 0, 0, 0], kind: "none", n: 0 };
       const av = avail.get(sk(b, p, s, l));
       if (!root && av) {
-        if (av.own.length) r = { c: [0, 0, 0, p + s, 0], kind: "own" };
-        else if (av.auc.length) r = { c: [0, 1, 0, 0, 0], kind: "auc" };
+        if (av.own.length) r = { c: [0, 0, 0, p + s, 0], kind: "own", n: 1 };
+        else if (av.auc.length) r = { c: [0, 1, 0, 0, 0], kind: "auc", n: 1 };
       }
+      const forced = !root && depth - d <= force && r.kind === "miss";
       if (d > 0 && r.c[0] + r.c[1] > 0 && performance.now() < deadline) {
         const P2 = lower(pp[p], p), S2 = lower(ps[s], s);
+        let fr = null;
         for (const [b1, b2] of pb[b]) for (const [p1, p2] of P2) for (const [s1, s2] of S2) {
           const A = solve(b1, p1, s1, l, d - 1, false), B = solve(b2, p2, s2, l, d - 1, false);
           const c = A.c.map((v, i) => v + B.c[i]); c[4] += 1;
-          if (cmp(c, r.c) < 0) r = { c, kind: "split", A: [b1, p1, s1, l, d - 1], B: [b2, p2, s2, l, d - 1] };
+          const x = { c, kind: "split", n: A.n + B.n, A: [b1, p1, s1, l, d - 1], B: [b2, p2, s2, l, d - 1] };
+          if (forced) { if (x.n && (!fr || cmp(c, fr.c) < 0)) fr = x; }
+          else if (cmp(c, r.c) < 0) r = x;
         }
+        if (fr) r = fr;
       }
       memo.set(key, r); return r;
     };
@@ -515,7 +526,15 @@ function makeEngine(DATA, store) {
       if ((r.kind === "own" || r.kind === "auc") && pool && pool.auc.length) return { it: pool.auc.shift(), leaf: true, auction: true, spec };
       return { it, leaf: true, wild: true, loose: C.psOf(it), spec };
     };
-    const tree = build(best.spec, best.r);
+    let tree = build(best.spec, best.r);
+    // looked-into branches that end up with none of your items (the copies ran out) are folded back
+    // into the one missing item they make
+    if (force) tree = (function fold(t, top) {
+      if (!t.kids) return t;
+      t.kids = t.kids.map(k => fold(k, false));
+      if (top || t.kids.some(k => k.kids || !k.wild)) return t;
+      return { it: t.it, leaf: true, wild: true, loose: C.psOf(t.it), spec: t.spec };
+    })(tree, true);
     let step = 0, missing = 0, auction = 0, L = 0, cost = 0;
     (function num(t) { if (t.kids) { t.kids.forEach(num); t.step = ++step; } else { L++; cost += C.score(t.it); if (t.wild) missing++; if (t.auction) auction++; } })(tree);
     // higher-tier items you own that could stand in somewhere: shown, never used automatically
@@ -554,7 +573,15 @@ function makeEngine(DATA, store) {
       // manual plan fills: the bigger target and the items above this slot stay out
       const banned = new Set(avoid && avoid.keys || []);
       const pool = avoid ? units.filter(u => !(avoid.set && matchesLoose(C, u, avoid.set)) && !banned.has(key(u))) : units;
-      const F = topDown(C, T, pool, Math.max(1, Math.min(8, +store.depth || 5)));
+      const depth = Math.max(1, Math.min(8, +store.depth || 5));
+      let F = topDown(C, T, pool, depth);
+      // manual plan: when nothing of yours is used, the missing items are looked into `force` levels deep
+      const mine = F => F.routes.length && F.routes[0].L > F.routes[0].missing;
+      if (avoid && avoid.force && !mine(F)) {
+        phase(`Najtańsza: brakujące ${avoid.force} poziomy w głąb`);
+        const G = topDown(C, T, pool, Math.max(depth, avoid.force + 1), avoid.force);
+        if (mine(G)) F = G;
+      }
       return F.routes.length && !redundant(C, F.routes[0].tree, T, avoid) ? F : { ...F, routes: [] };
     }
     if (store.noOver === false) return findRoutesIn(C, T, units, mode, deep, avoid);
@@ -1239,7 +1266,7 @@ onmessage = e => {
   eng.onPhase = text => postMessage({ id: m.id, phase: text });
   try {
     const slim = F => F && { R: { engine: F.R.engine, total: F.R.total, n: F.R.n, g: F.R.g, trimmed: F.R.trimmed, partial: F.R.partial, depth: F.R.depth, T: F.R.T }, routes: F.routes, ladder: F.ladder, higher: F.higher, alt: slim(F.alt) };
-    postMessage({ id: m.id, F: slim(eng.findRoutes(eng.compile(m.ci), m.T, m.units, m.mode, m.deep, null)) });
+    postMessage({ id: m.id, F: slim(eng.findRoutes(eng.compile(m.ci), m.T, m.units, m.mode, m.deep, m.force ? { force: m.force } : null)) });
   } catch (err) { postMessage({ id: m.id, error: String(err && err.stack || err) }); }
 };`;
   let worker = null, workerOff = false, job = null;
@@ -1258,12 +1285,13 @@ onmessage = e => {
     j.resolve(null);
   }
   // findRoutes away from the page; resolves with its result, or null when cancelled
-  function searchAsync(T, units, mode, deep, onPhase) {
+  // force: manual plan with Najtańsza, how many levels deep missing items are looked into
+  function searchAsync(T, units, mode, deep, onPhase, force = 0) {
     cancelSearch();
     const ci = catIdx, settings = { noOver: store.noOver, depth: store.depth };
     return new Promise(resolve => {
       const my = { resolve }; job = my;
-      const runHere = () => setTimeout(() => { if (job !== my) return; job = null; $("result").dataset.ran = "page"; resolve(findRoutes(compile(ci), T, units, mode, deep, null)); }, 30);
+      const runHere = () => setTimeout(() => { if (job !== my) return; job = null; $("result").dataset.ran = "page"; resolve(findRoutes(compile(ci), T, units, mode, deep, force ? { force } : null)); }, 30);
       const w = getWorker();
       if (!w) return runHere();
       const id = Math.random();
@@ -1275,7 +1303,7 @@ onmessage = e => {
         job = null; $("result").dataset.ran = "worker"; resolve(m.F);
       };
       w.onerror = e => { if (e.preventDefault) e.preventDefault(); if (job !== my) return; workerOff = true; if (worker) worker.terminate(); worker = null; runHere(); };
-      w.postMessage({ type: "find", id, ci, T, units, mode, deep, settings });
+      w.postMessage({ type: "find", id, ci, T, units, mode, deep, settings, force });
     });
   }
   // status while searching: what it is doing, time so far, a bar (filling up to the 15 s limit in deep mode), Anuluj
@@ -1501,6 +1529,9 @@ onmessage = e => {
     const [a, b] = t.kids;
     return { req: Rq, fill: { kind: "split", kids: [toSlots(a, preimage(C, b.it, Rq) || C.psOf(a.it), av), toSlots(b, preimage(C, a.it, Rq) || C.psOf(b.it), av)] } };
   }
+  // Najtańsza in the manual plan: missing items are looked into this many levels deep (see topDown)
+  const MAN_FORCE = 3;
+  const manForce = () => (store.mode || "optimal") === "cheap" ? MAN_FORCE : 0;
   // Fills a slot automatically: an item you have that already fits, otherwise the best route
   // the normal search finds for this slot (fewest missing items), rebuilt as builder slots.
   function manAuto(R, av, isRoot) {
@@ -1509,7 +1540,8 @@ onmessage = e => {
     const units = [].concat(...av.values()).filter(u => !isTarget(u));
     if (!units.length) return slotNode(R);
     // the root uses the chosen route mode (and deep search); smaller fills along the way use the same mode
-    const r = findRoutes(C, R, units, store.mode || "optimal", isRoot && !!store.deep, isRoot ? null : { set: man.T, keys: man.banned || [] }).routes[0];
+    const force = manForce();
+    const r = findRoutes(C, R, units, store.mode || "optimal", isRoot && !!store.deep, isRoot ? (force ? { force } : null) : { set: man.T, keys: man.banned || [], force }).routes[0];
     if (!r || r.L === r.missing) return slotNode(R);
     return toSlots(r.tree, R, av);
   }
@@ -1675,7 +1707,7 @@ onmessage = e => {
     const av = manAvail(null), units = [].concat(...av.values()).filter(u => !isTarget(u));
     if (!units.length) return slotNode(man.T);
     const deep = !!store.deep, box = searchBox(deep);
-    const F = await searchAsync(man.T, units, store.mode || "optimal", deep, box.phase);
+    const F = await searchAsync(man.T, units, store.mode || "optimal", deep, box.phase, manForce());
     box.done();
     if (!F) return null;
     const r = F.routes[0];

@@ -95,6 +95,11 @@ ol.steps li.final::before { background: var(--accent); border-color: var(--accen
 .combo .plus, .combo .arrow { font-size: .78rem; color: var(--muted); }
 .tag { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 400; margin-left: 6px; }
 .used { display: flex; flex-wrap: wrap; gap: 6px; }
+.trashsum { margin: 18px 0 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.trashsum .sub-h { margin-top: 0; }
+.trashsum-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.trashsum-cols .note { margin-bottom: 6px; }
+@media (max-width: 700px) { .trashsum-cols { grid-template-columns: 1fr; } }
 .chip { font-size: .85rem; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--sunk); }
 textarea {
   font: .9rem var(--mono); color: var(--ink); background: var(--sunk); border: 1px solid var(--line);

@@ -7,6 +7,11 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 43 (2026-11-05)
+- Przeróbka złomu: a Podsumowanie box under the steps lists every item of yours that goes in and
+  every final product (results not used by a later step), identical items counted together (×n).
+  Regression baseline updated for the trash checks (text after the steps).
+
 ## Shipped in version 42 (2026-11-05)
 - Manual plan with Najtańsza: when the plain fill uses none of your items, missing items are
   looked into 3 levels deep under the strict rule. The pair whose branch holds your items and

@@ -1914,6 +1914,22 @@ onmessage = e => {
     }
     return steps;
   }
+  // summary under the steps: every item of yours that goes in, and every final product that comes out
+  // (results not used again by a later step), identical items counted together
+  function trashSummary(steps) {
+    const later = new Set(); steps.forEach(st => { later.add(st.a.id); later.add(st.b.id); });
+    const used = steps.flatMap(st => [st.a, st.b]).filter(x => !x.from);
+    const made = steps.map(st => st.r).filter(r => !later.has(r.id));
+    const group = list => { const m = new Map(); for (const x of list) { const g = m.get(x.k); if (g) g.n++; else m.set(x.k, { it: x.it, n: 1 }); } return [...m.values()]; };
+    const chips = (list, cls) => `<div class="used">${group(list).map(g => `<span class="chip ${cls}">${itemHTML(g.it)}${g.n > 1 ? ` <b>×${g.n}</b>` : ""}</span>`).join("")}</div>`;
+    return `<section class="trashsum" aria-label="Podsumowanie przeróbki">
+      <h3 class="sub-h">Podsumowanie</h3>
+      <div class="trashsum-cols">
+        <div><div class="note">Zużyte przedmioty (${used.length})</div>${chips(used, "")}</div>
+        <div><div class="note">Gotowe przedmioty (${made.length})</div>${chips(made, "own")}</div>
+      </div>
+    </section>`;
+  }
   function renderTrashSeg() {
     const C = compile(), noAffix = !C.hasP && !C.hasS;
     let tm = store.trashMode || "both";
@@ -1938,6 +1954,7 @@ onmessage = e => {
       <h3 class="sub-h">Krok po kroku <span class="progress note"></span></h3>
       <ol class="steps track">${steps.map((s, i) => `<li data-step="${i + 1}" class="${s.warn ? "warnstep " : ""}${s.r.from && !steps.slice(i + 1).some(q => q.a.id === s.r.id || q.b.id === s.r.id) ? "final" : ""}"><div class="combo">
         ${side(s.a)}<div class="plus">+</div>${side(s.b)}<div class="arrow">daje · ${s.kd === 1 ? "ulepszenie bazy" : mode === "both" ? (s.kd === 3 ? "duże ulepszenie" : "małe ulepszenie") : "ulepszenie"}</div><div>${itemHTML(s.r.it)}</div>${s.warn ? `<div class="warnmsg">${esc(s.warn)}</div>` : ""}</div><label class="donechk"><input type="checkbox" data-done="${i + 1}"> Zrobione</label></li>`).join("")}</ol>
+      ${trashSummary(steps)}
       <div class="row"><button class="btn primary" id="applyTrash">Zastosuj w ekwipunku</button><span class="note">Usuwa zużyte przedmioty i dodaje wyniki.</span></div>`;
     hookSteps(out, new Set());
     $("applyTrash").onclick = () => {

@@ -7,6 +7,12 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 46 (2026-11-06)
+- "Lepsze niż cel: tylko w ostateczności": when the route without better items has missing items
+  but the route with them is complete, the complete route is now the result (the other is offered
+  with "Pokaż ścieżkę bez nich"). If the route with better items would still miss items, the route
+  without them stays the result, as before. Applies to route search and the manual plan's first fill.
+
 ## Shipped in version 45 (2026-11-05)
 - Arkusze moved from the sidebar to the free space under the view panel (desktop); phones get one
   small "Pokaż arkusze" button right under the view's main button (Więcej entry removed).

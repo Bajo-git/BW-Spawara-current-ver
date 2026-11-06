@@ -16,7 +16,7 @@ const { chromium } = require('playwright'); const fs = require('fs'), path = req
     await pg.reload(); await pg.$eval('#findBtn', e => e.click());
     await pg.waitForFunction(() => { const x = document.querySelector('#result').innerText; return x && !/^Szukam/.test(x); }, null, { timeout: 60000 });
     const head = (await pg.locator('#result .verdict').first().innerText()).replace(/\(ścieżka.*$/s, '').replace(/\s+/g, ' ').trim();
-    const alt = await pg.$('#altGo') ? (await pg.locator('.altbox').innerText()).replace(/\s+/g, ' ') : 'no alternative';
+    const alt = await pg.$('#altSwap') ? (await pg.locator('.altbox').innerText()).replace(/\s+/g, ' ') : 'no alternative';
     res[mode + ' ' + s] = head;
     console.log(`${mode} tygrysie kilt ${s}: ${head}\n   alt: ${alt.slice(0, 160)}`);
   }

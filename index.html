@@ -1196,13 +1196,15 @@ function makeEngine(DATA, store) {
       const F2 = findRoutes(C, Tr, units, mode, deep, avoid);
       if (F2.routes.length) return F2.alt ? F2 : { ...F2, alt: F };
     }
-    // Keeping better items out can cost missing items: the route with them is offered, not chosen.
+    // Keeping better items out can cost missing items. "Last resort": when the route with better items
+    // is complete (nothing missing), it becomes the result and the one without them is offered; when
+    // it would still miss items, the route without them stays the result and this one is offered.
     if (r.missing > 0) {
       phase("Sprawdzam ścieżkę z lepszymi przedmiotami");
       // never an item at least as good as the target in every affix it names: you'd destroy a
       // better version of what you are making
       const G = findRoutesIn(C, T, units.filter(u => !atLeastTarget(C, T, u)), mode, deep, avoid);
-      if (G.routes.length && G.routes[0].missing < r.missing) return { ...F, alt: G };
+      if (G.routes.length && G.routes[0].missing < r.missing) return G.routes[0].missing === 0 ? { ...G, alt: F } : { ...F, alt: G };
     }
     return F;
   }
@@ -2038,18 +2040,22 @@ onmessage = e => {
       hookDeep(runFind);
       return;
     }
-    // F: the route without items better than the target; F.alt: one with them (fewer missing)
+    // F: the result; F.alt: the other choice. One of them uses your items better than the target: that
+    // one is the result only when it is complete and the other has missing items (see findRoutes).
     let cur, routes, pick = 0;
     const load = X => { cur = X; pick = 0; routes = X.routes.map(r => { const tree = serTree(C, r.tree); assignPrices(tree, units); return { ...r, tree }; }); };
     load(F);
     const ms = Math.round(performance.now() - t0);
     // the better-than-the-result items a route uses (its open prefix/suffix fixed to what it makes)
     const betterIn = Fx => { const r = Fx.routes[0], res = C.psOf(r.tree.it), Tr = { ...T, p: isOne(T.p) ? T.p : res.p, s: isOne(T.s) ? T.s : res.s }, l = []; walk(r.tree, t => { if (t.leaf && !t.wild && !t.auction && overOf(C, Tr, t.it)) l.push(t.it); }); return l; };
+    const other = () => cur === F ? F.alt : F;
+    const missTxt = n => `${n} ${pl(n, "brakującym", "brakującymi", "brakującymi")}`;
     const altHTML = () => {
       if (!F.alt) return "";
-      if (cur === F) { const a = F.alt.routes[0], used = betterIn(F.alt);
-        return `<div class="altbox"><div><b>Jest ścieżka z ${a.missing ? `${a.missing} ${pl(a.missing, "brakującym", "brakującymi", "brakującymi")}` : "wszystkim pod ręką"}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div><div class="note">Ustawienie „Nie zużywaj lepszych niż cel” trzyma je z daleka, więc pokazana jest ścieżka bez nich.</div><button class="btn small" id="altGo">Pokaż ścieżkę z nimi</button></div>`; }
-      return `<div class="altbox"><div><b>Ta ścieżka zużywa przedmioty lepsze niż wynik:</b> ${betterIn(cur).map(it => itemHTML(it)).join(" ")}</div><button class="btn small" id="altBack">Wróć do ścieżki bez nich</button></div>`;
+      const o = other(), oR = o.routes[0], mine = betterIn(cur);
+      if (!mine.length) { const used = betterIn(o);
+        return `<div class="altbox"><div><b>Jest ścieżka z ${oR.missing ? missTxt(oR.missing) : "wszystkim pod ręką"}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">Ustawienie „Nie zużywaj lepszych niż cel” sięga po nie tylko wtedy, gdy dają pełną ścieżkę, więc pokazana jest ścieżka bez nich.</div>` : ""}<button class="btn small" id="altSwap">Pokaż ścieżkę z nimi</button></div>`; }
+      return `<div class="altbox"><div><b>Ta ścieżka zużywa przedmioty lepsze niż wynik:</b> ${mine.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">Bez nich jest tylko ścieżka z ${missTxt(oR.missing)}, więc pokazana jest ta pełna (ustawienie: lepsze niż cel tylko w ostateczności).</div>` : ""}<button class="btn small" id="altSwap">${cur === F ? "Pokaż ścieżkę bez nich" : "Wróć do ścieżki bez nich"}</button></div>`;
     };
     const modeName = { fast: "najszybsza", cheap: "najtańsza", optimal: "optymalna" }[mode];
     const render = () => {
@@ -2072,8 +2078,7 @@ onmessage = e => {
         ${whyNotHTML(C, T, R, r.tree, mode)}
         <div class="row"><button class="btn primary" id="lockPlan">Zapisz jako plan</button><span class="note">Rezerwuje te przedmioty, żeby inne wyszukiwania ich nie brały.</span></div>`;
       out.querySelectorAll("[data-alt]").forEach(b => b.onclick = () => { pick = +b.dataset.alt; render(); });
-      if ($("altGo")) $("altGo").onclick = () => { load(F.alt); render(); };
-      if ($("altBack")) $("altBack").onclick = () => { load(F); render(); };
+      if ($("altSwap")) $("altSwap").onclick = () => { load(other()); render(); };
       hookDeep(runFind);
       r.done ||= new Set();
       hookSteps(out, r.done);

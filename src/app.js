@@ -2211,6 +2211,8 @@ onmessage = e => {
   $("pasteBox").addEventListener("input", () => { if (!$("pasteBox").value) $("pasteBox").classList.remove("full"); });
 
   // ---- tree canvas: drag to move, + / − / fit buttons, Ctrl + wheel to zoom ----
+  // Phones: one finger scrolls natively (momentum, taps stay taps), two fingers pinch-zoom around the
+  // fingers. Mouse: drag to move. Every zoom keeps the point under the fingers / cursor / view centre still.
   function canvasify(sc) {
     sc.dataset.cv = "1";
     const tree = sc.querySelector(".tree"); if (!tree) return;
@@ -2220,14 +2222,22 @@ onmessage = e => {
     const wrap = document.createElement("div"); wrap.className = "canvas-wrap"; sc.replaceWith(wrap); wrap.appendChild(sc);
     let z = 1;
     const apply = () => { tree.style.transform = `scale(${z})`; sizer.style.width = w * z + "px"; sizer.style.height = h * z + "px"; };
-    const clamp = v => Math.min(2, Math.max(.3, v));
+    const clamp = v => Math.min(2.5, Math.max(.25, v));
+    const pad = () => parseFloat(getComputedStyle(sc).paddingLeft) || 0;
+    // zoom to nz keeping the tree point under (mx, my) — coordinates inside the box — where it is
+    const zoomAt = (nz, mx = sc.clientWidth / 2, my = sc.clientHeight / 2) => {
+      const p = pad(), cx = (sc.scrollLeft + mx - p) / z, cy = (sc.scrollTop + my - p) / z;
+      z = clamp(nz); apply();
+      sc.scrollLeft = cx * z + p - mx; sc.scrollTop = cy * z + p - my;
+    };
     const fit = () => { z = clamp(Math.min(1, (sc.clientWidth - 50) / w)); apply(); };
     wrap.insertAdjacentHTML("beforeend", `<div class="zoombar"><button type="button" aria-label="Przybliż">+</button><button type="button" aria-label="Oddal">−</button><button type="button" aria-label="Dopasuj">⤢</button></div><div class="zoomhint">Przeciągnij, żeby przesunąć · Ctrl + kółko: zoom</div>`);
     const [bp, bm, bf] = wrap.querySelectorAll(".zoombar button");
-    bp.onclick = () => { z = clamp(z * 1.2); apply(); }; bm.onclick = () => { z = clamp(z / 1.2); apply(); }; bf.onclick = fit;
-    sc.addEventListener("wheel", e => { if (!e.ctrlKey) return; e.preventDefault(); z = clamp(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1)); apply(); }, { passive: false });
+    bp.onclick = () => zoomAt(z * 1.25); bm.onclick = () => zoomAt(z / 1.25); bf.onclick = fit;
+    sc.addEventListener("wheel", e => { if (!e.ctrlKey) return; e.preventDefault(); const r = sc.getBoundingClientRect(); zoomAt(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+    // mouse: drag to move
     let down = null, moved = false;
-    sc.addEventListener("pointerdown", e => { if (e.button !== 0) return; down = { x: e.clientX, y: e.clientY, l: sc.scrollLeft, t: sc.scrollTop }; moved = false; });
+    sc.addEventListener("pointerdown", e => { if (e.pointerType !== "mouse" || e.button !== 0) return; down = { x: e.clientX, y: e.clientY, l: sc.scrollLeft, t: sc.scrollTop }; moved = false; });
     sc.addEventListener("pointermove", e => {
       if (!down) return;
       const dx = e.clientX - down.x, dy = e.clientY - down.y;
@@ -2238,6 +2248,27 @@ onmessage = e => {
     const end = () => { down = null; sc.classList.remove("drag"); };
     sc.addEventListener("pointerup", end); sc.addEventListener("pointerleave", end);
     sc.addEventListener("click", e => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+    // touch: two fingers pinch (drawn once per frame); one finger is left to the browser
+    let pinch = null, frame = 0;
+    const two = e => { const r = sc.getBoundingClientRect(), [a, b] = e.touches; return { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1, mx: (a.clientX + b.clientX) / 2 - r.left, my: (a.clientY + b.clientY) / 2 - r.top }; };
+    sc.addEventListener("touchstart", e => {
+      if (e.touches.length !== 2) return;
+      const g = two(e), p = pad();
+      pinch = { d: g.d, z, cx: (sc.scrollLeft + g.mx - p) / z, cy: (sc.scrollTop + g.my - p) / z, g };
+      tree.style.willChange = "transform";
+    }, { passive: true });
+    sc.addEventListener("touchmove", e => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault(); pinch.g = two(e);
+      if (!frame) frame = requestAnimationFrame(() => {
+        frame = 0; if (!pinch) return;
+        const { g } = pinch, p = pad();
+        z = clamp(pinch.z * g.d / pinch.d); apply();
+        sc.scrollLeft = pinch.cx * z + p - g.mx; sc.scrollTop = pinch.cy * z + p - g.my;
+      });
+    }, { passive: false });
+    const pinchEnd = e => { if (pinch && e.touches.length < 2) { pinch = null; tree.style.willChange = ""; } };
+    sc.addEventListener("touchend", pinchEnd); sc.addEventListener("touchcancel", pinchEnd);
     // a tree folded away (phones) has no width yet: size it when it is opened
     const first = () => { if (w > sc.clientWidth - 50) fit(); else apply(); };
     const box = wrap.closest("details");

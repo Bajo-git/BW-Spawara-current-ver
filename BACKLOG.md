@@ -7,6 +7,13 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 47 (2026-11-06)
+- Tree on phones: the tree box no longer stretches with a zoomed tree (grid child min-width), so
+  zoomed trees scroll inside a phone-wide box; one finger scrolls natively (momentum, taps stay
+  taps); two fingers pinch-zoom around the fingers (drawn once per frame); + / − zoom around the
+  view centre, Ctrl + wheel around the cursor. Mouse drag on desktop unchanged.
+  tests/treetouch.js checks pinch, swipe, tap while zoomed and page width.
+
 ## Shipped in version 46 (2026-11-06)
 - "Lepsze niż cel: tylko w ostateczności": when the route without better items has missing items
   but the route with them is complete, the complete route is now the result (the other is offered

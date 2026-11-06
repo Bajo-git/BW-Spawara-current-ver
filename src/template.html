@@ -230,6 +230,8 @@ select, textarea, input { color-scheme: dark; }
 .tree-scroll .sizer { position: relative; }
 .tree-scroll .sizer > .tree { transform-origin: 0 0; position: absolute; left: 0; top: 0; }
 .canvas-wrap { position: relative; }
+/* grid children default to min-width: auto, which lets a zoomed tree stretch the box instead of scrolling */
+.result > *, details.treebox { min-width: 0; }
 .zoombar { position: absolute; right: 10px; bottom: 10px; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); z-index: 2; }
 .zoombar button { border: 0; border-top: 1px solid var(--line); background: var(--surface); color: var(--ink); width: 32px; height: 30px; font: 600 1rem var(--body); cursor: pointer; }
 .zoombar button:first-child { border-top: 0; }
@@ -357,7 +359,7 @@ details.treebox[open] > summary::before { content: "▾ "; }
   .viewbar { gap: 8px; }
   .viewbar .seg { flex: 1 1 100%; }
   .viewbar .seg button { flex: 1; min-height: 40px; }
-  .tree-scroll.canvas { max-height: 420px; padding: 14px; touch-action: none; }
+  .tree-scroll.canvas { max-height: 420px; padding: 14px; touch-action: pan-x pan-y; -webkit-overflow-scrolling: touch; }
   .zoombar button { width: 40px; height: 40px; }
   .zoomhint { display: none; }
   ol.steps li { grid-template-columns: 30px minmax(0, 1fr); }

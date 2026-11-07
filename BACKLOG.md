@@ -1,13 +1,5 @@
 # Warsztat Anżeja backlog (queued for the next version)
 
-- Plans survive clearing the inventory (user request, 2026-11-07, not started). Today "Wyczyść
-  ekwipunek" keeps the saved plans, but every plan whose items are gone turns "Zepsuty" and
-  reserves nothing; it only recovers if every one of its items comes back. Wanted: clearing leaves
-  plans intact (a calm state such as "czeka na ekwipunek", not "Zepsuty"); when new equipment is
-  loaded, each plan's slots are filled again as before wherever the items are found (partial
-  matches count; the rest show as missing, like a waiting plan), and reservations resume.
-  Open points: what counts as "the same item" (exact key, as planned leaves today), and which plan
-  gets an item first when two plans want the same one (suggest: saved order, as now).
 - Optymalna "ugly loop" (user report, open, no fix chosen yet): the search finds a lower item that
   could make an ingredient, but its partner needs an affix equal to the target's tier, which makes
   the step pointless. Ideas to test: in manual-plan fills, cap missing partners strictly below the

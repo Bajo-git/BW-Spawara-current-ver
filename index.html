@@ -381,6 +381,7 @@ details.treebox[open] > summary::before { content: "▾ "; }
   .mmore button.on { background: var(--sunk); color: var(--accent-hi); }
 }
 
+.planno { font: 700 .82rem var(--mono); color: var(--muted); margin-right: 2px; }
 /* sheet cheat sheet: miniatures under the view panel, full tables in a dialog */
 .sheet-h { margin: 0; }
 .sheetthumbs { display: grid; grid-template-columns: repeat(3, minmax(0, 120px)); gap: 10px; }
@@ -1390,10 +1391,14 @@ function makeEngine(DATA, store) {
     }
     const auc = new Map();
     for (const e of (s.auction || [])) { const k = key(e); auc.set(k, (auc.get(k) || 0) + e.n); }
-    const reserved = new Map(), aucReserved = new Map(), status = [];
-    const take = k => { avail.set(k, avail.get(k) - 1); reserved.set(k, (reserved.get(k) || 0) + 1); };
-    const takeAuc = k => { auc.set(k, auc.get(k) - 1); aucReserved.set(k, (aucReserved.get(k) || 0) + 1); };
+    // reservedBy / aucBy: item key → Map(plan index → copies), for the "W planie N" labels
+    const reserved = new Map(), aucReserved = new Map(), status = [], reservedBy = new Map(), aucBy = new Map();
+    const mark = (by, k, pi) => { let m = by.get(k); if (!m) by.set(k, m = new Map()); m.set(pi, (m.get(pi) || 0) + 1); };
+    let pi = -1;
+    const take = k => { avail.set(k, avail.get(k) - 1); reserved.set(k, (reserved.get(k) || 0) + 1); mark(reservedBy, k, pi); };
+    const takeAuc = k => { auc.set(k, auc.get(k) - 1); aucReserved.set(k, (aucReserved.get(k) || 0) + 1); mark(aucBy, k, pi); };
     for (const plan of s.plans) {
+      pi++;
       // an unlocked plan stays on the list but reserves nothing
       if (plan.off) { status.push({ state: "off", found: [] }); continue; }
       // auction leaves can be covered by the auction list or, once bought, by your inventory
@@ -1411,11 +1416,18 @@ function makeEngine(DATA, store) {
       });
       status.push({ state: !found.every(Boolean) ? "waiting" : toBuy ? "buy" : "ready", found, toBuy });
     }
-    const A = { avail, reserved, status, auc, aucReserved };
+    const A = { avail, reserved, status, auc, aucReserved, reservedBy, aucBy };
     allocCache = { ci, A };
     return A;
   }
   const tooDear = x => store.cash != null && payOf(x) > store.cash;
+  // "W planie 3" / "W planach 1, 3": which saved plans (numbered as in Plany) hold copies of this item
+  function planPill(by, k) {
+    const m = by && by.get(k); if (!m || !m.size) return "";
+    const s = slot(), nums = [...m.keys()].sort((a, b) => a - b);
+    const tip = nums.map(i => `Plan ${i + 1}: ${itemText(s.plans[i].result)}${m.get(i) > 1 ? ` (${m.get(i)} szt.)` : ""}`).join("; ");
+    return `<span class="pill plan" title="${esc(tip)}">${nums.length === 1 ? "W planie" : "W planach"} ${nums.map(i => i + 1).join(", ")}</span>`;
+  }
   // auction listings, one entry per copy, cheapest first; plans reserve the cheapest copies
   function aucCopies(ci = catIdx) {
     const by = new Map();
@@ -1616,7 +1628,7 @@ function makeEngine(DATA, store) {
     el.innerHTML = list.map((x, i) => {
       const rs = inPlan.get(i) || 0, price = x.price ?? null, dear = tooDear(x);
       const hidden = dear && store.affordOnly;
-      return `<li class="${dear ? "dear" : ""}${hidden ? " skipped" : ""}"><div class="inv-name">${itemHTML(x)}${x.n > 1 ? `<span class="pill">×${x.n}</span>` : ""}${rs ? `<span class="pill plan">W planie ${rs}</span>` : ""}${dear ? `<span class="pill bad">${hidden ? "pomijany" : "za drogo"}</span>` : ""}</div>
+      return `<li class="${dear ? "dear" : ""}${hidden ? " skipped" : ""}"><div class="inv-name">${itemHTML(x)}${x.n > 1 ? `<span class="pill">×${x.n}</span>` : ""}${rs ? planPill(A.aucBy, key(x)) : ""}${dear ? `<span class="pill bad">${hidden ? "pomijany" : "za drogo"}</span>` : ""}</div>
         <label class="price" title="${x.pk === "bid" ? `Najwyższa oferta; przebicie o 5% kosztuje ${fmt(payOf(x))} kk` : x.pk === "min" ? "Cena minimalna" : price == null ? "Brak oferty i ceny minimalnej" : "Cena wpisana ręcznie"}"><span>${x.pk === "bid" ? "oferta" : x.pk === "min" ? "min." : price == null ? "" : "cena"}</span><input data-price="${i}" inputmode="numeric" value="${price == null ? "" : fmt(price)}" placeholder="brak" aria-label="Cena">${x.pk === "bid" && price != null ? `<span class="pay">→ ${fmt(payOf(x))}</span>` : ""}</label>
         <button class="btn small" data-bought="${i}" title="Przenosi do ekwipunku i odejmuje cenę od kasy">Kupione</button>
         <button class="btn small ghost" data-lost="${i}" title="Usuwa jeden z listy">Utracone</button></li>`;
@@ -1766,7 +1778,7 @@ function makeEngine(DATA, store) {
       const lk = Math.min(x.lock || 0, x.n), rs = A.reserved.get(key(x)) || 0;
       const lockLabel = !lk ? "Zablokuj" : x.n === 1 ? "Zablokowany" : `Zablokowane ${lk}/${x.n}`;
       return `<li class="${lk === x.n ? "is-locked" : ""}">
-        <div class="inv-name">${itemHTML(x)}${rs ? `<span class="pill plan">W planie ${rs}</span>` : ""}</div>
+        <div class="inv-name">${itemHTML(x)}${rs ? planPill(A.reservedBy, key(x)) : ""}</div>
         <button class="lockbtn${lk ? " on" : ""}" data-lock="${i}" aria-pressed="${lk > 0}" title="Zablokowanych przedmiotów nic nie użyje">${lockLabel}</button>
         <span class="qty"><button data-i="${i}" data-d="-1" aria-label="Jeden mniej">−</button><span>${x.n}</span><button data-i="${i}" data-d="1" aria-label="Jeden więcej">+</button></span>
         <button class="x" data-del="${i}" aria-label="Usuń">×</button></li>`;
@@ -2520,7 +2532,10 @@ onmessage = e => {
   // Kinds of upgrade, best first: 3 = big (both affixes up), 2 = small (one affix up, the
   // other no worse; in single-affix modes simply "upgrade"), 1 = base upgrade (base up, the
   // affixes that count no worse; only when bases are included).
-  function trashPlan(C, units, mode, withBases) {
+  // opt (Oba afiksy only): big = big upgrades only; dir = "p" / "s": every combine must raise that affix
+  // while the other stays at least as good as in the better input (big upgrades qualify); with
+  // either, base-only upgrades are not used.
+  function trashPlan(C, units, mode, withBases, opt = {}) {
     const noAffix = !C.hasP && !C.hasS;
     const pT = it => C.idxP(it), sT = it => C.idxS(it), bT = it => C.idxB(it);
     const cnt = it => (it.p ? 1 : 0) + (it.s ? 1 : 0);
@@ -2543,6 +2558,9 @@ onmessage = e => {
       const mp = Math.max(pT(a), pT(b)), ms = Math.max(sT(a), sT(b));
       const upP = r.p && pT(r) > mp, upS = r.s && sT(r) > ms;
       if (upP && upS) return 3;
+      if (opt.big) return 0;
+      if (opt.dir === "p") return upP && sT(r) >= ms ? 2 : 0;
+      if (opt.dir === "s") return upS && pT(r) >= mp ? 2 : 0;
       if ((upP && sT(r) >= ms) || (upS && pT(r) >= mp)) return 2;
       if (withBases && baseUp && pT(r) >= mp && sT(r) >= ms) return 1;
       return 0;
@@ -2597,6 +2615,8 @@ onmessage = e => {
       </div>
     </section>`;
   }
+  // the Oba afiksy options from Ustawienia (none in single-affix modes or without both affixes)
+  const trashOpt = (tm, C = compile()) => tm === "both" && C.hasP && C.hasS ? { big: !!store.trashBig, dir: store.trashBig ? "" : (store.trashDir && store.trashDir !== "any" ? store.trashDir : "") } : {};
   function renderTrashSeg() {
     const C = compile(), noAffix = !C.hasP && !C.hasS;
     let tm = store.trashMode || "both";
@@ -2604,14 +2624,16 @@ onmessage = e => {
     if (!(C.hasP && C.hasS) && tm === "both" && !noAffix) tm = C.hasP ? "p" : "s";
     $("trashSeg").hidden = noAffix;
     $("trashSeg").querySelectorAll("button").forEach(b => { b.setAttribute("aria-pressed", b.dataset.v === tm); b.hidden = (b.dataset.v === "p" && !C.hasP) || (b.dataset.v === "s" && !C.hasS) || (b.dataset.v === "both" && !(C.hasP && C.hasS)); });
-    $("trashNote").textContent = noAffix ? "Broń palna nie ma afiksów, więc ulepszana jest tylko baza." : tm === "both" ? "Nigdy nie traci afiksu." : `Liczy się tylko ${tm === "p" ? "prefiks" : "sufiks"}; utrata ${tm === "p" ? "sufiksu" : "prefiksu"} jest dozwolona.`;
+    const o = trashOpt(tm, C);
+    $("trashNote").textContent = noAffix ? "Broń palna nie ma afiksów, więc ulepszana jest tylko baza." : tm === "both" ? (o.big ? "Nigdy nie traci afiksu. Tylko duże ulepszenia: oba afiksy rosną." : o.dir ? `Nigdy nie traci afiksu. Każde połączenie podnosi ${o.dir === "p" ? "prefiks" : "sufiks"}.` : "Nigdy nie traci afiksu.") : `Liczy się tylko ${tm === "p" ? "prefiks" : "sufiks"}; utrata ${tm === "p" ? "sufiksu" : "prefiksu"} jest dozwolona.`;
     return tm;
   }
-  $("trashSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.trashMode = b.dataset.v; persist(); renderTrashSeg(); };
+  $("trashSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; store.trashMode = b.dataset.v; persist(); renderTrashSeg(); renderSetSums(); };
   $("trashBtn").onclick = () => {
     const out = $("result"), C = compile(), mode = renderTrashSeg();
     const units = byRarity(freeUnits(), store.trashRar || "both");
-    const steps = trashPlan(C, units, mode, (!!store.trashBases && !ringLike()) || (!C.hasP && !C.hasS));
+    const opt = trashOpt(mode, C);
+    const steps = trashPlan(C, units, mode, (!!store.trashBases && !ringLike() && !opt.big && !opt.dir) || (!C.hasP && !C.hasS), opt);
     if (!steps.length) { out.innerHTML = `<div class="verdict bad">W tym trybie nie da się nic ulepszyć z wolnych przedmiotów.</div>`; return; }
     const before = units.length, after = before - steps.length;
     const side = x => `<div>${itemHTML(x.it)}${x.from ? `<span class="tag">z kroku ${x.from}</span>` : ""}</div>`;
@@ -2620,7 +2642,7 @@ onmessage = e => {
       ${steps.some(s => s.warn) ? `<div class="verdict bad">${(n => n === 1 ? "1 krok poświęca afiks co najmniej tak wysoki jak ulepszany. Oznaczono go poniżej." : `${n} ${pl(n, "krok", "kroki", "kroków")} poświęca afiks co najmniej tak wysoki jak ulepszany. Oznaczono je poniżej.`)(steps.filter(s => s.warn).length)}</div>` : ""}
       <h3 class="sub-h">Krok po kroku <span class="progress note"></span></h3>
       <ol class="steps track">${steps.map((s, i) => `<li data-step="${i + 1}" class="${s.warn ? "warnstep " : ""}${s.r.from && !steps.slice(i + 1).some(q => q.a.id === s.r.id || q.b.id === s.r.id) ? "final" : ""}"><div class="combo">
-        ${side(s.a)}<div class="plus">+</div>${side(s.b)}<div class="arrow">daje · ${s.kd === 1 ? "ulepszenie bazy" : mode === "both" ? (s.kd === 3 ? "duże ulepszenie" : "małe ulepszenie") : "ulepszenie"}</div><div>${itemHTML(s.r.it)}</div>${s.warn ? `<div class="warnmsg">${esc(s.warn)}</div>` : ""}</div><label class="donechk"><input type="checkbox" data-done="${i + 1}"> Zrobione</label></li>`).join("")}</ol>
+        ${side(s.a)}<div class="plus">+</div>${side(s.b)}<div class="arrow">daje · ${s.kd === 1 ? "ulepszenie bazy" : mode === "both" ? (s.kd === 3 ? "duże ulepszenie" : opt.dir ? `ulepszenie ${opt.dir === "p" ? "prefiksu" : "sufiksu"}` : "małe ulepszenie") : "ulepszenie"}</div><div>${itemHTML(s.r.it)}</div>${s.warn ? `<div class="warnmsg">${esc(s.warn)}</div>` : ""}</div><label class="donechk"><input type="checkbox" data-done="${i + 1}"> Zrobione</label></li>`).join("")}</ol>
       ${trashSummary(steps)}
       <div class="row"><button class="btn primary" id="applyTrash">Zastosuj w ekwipunku</button><span class="note">Usuwa zużyte przedmioty i dodaje wyniki.</span></div>`;
     hookSteps(out, new Set());
@@ -2637,6 +2659,7 @@ onmessage = e => {
   function refresh() { renderInv(); renderAuction(); renderPlans(); renderShop(); renderSetSums(); }
 
   // ---- settings: every switch in one panel; each view shows a one-line summary of what applies ----
+  const bothNA = () => { const C = compile(); return !(C.hasP && C.hasS) ? "ta kategoria nie ma obu afiksów" : (store.trashMode || "both") !== "both" ? "działa tylko w trybie Oba afiksy" : ""; };
   const basesNA = () => { const C = compile(); return !C.hasP && !C.hasS ? "broń palna: zawsze liczy się baza" : ringLike() ? "w tej kategorii bazy się nie liczą" : ""; };
   const SETTINGS = [
     { g: "Szukanie ścieżki", k: "noOver", def: true, label: "Nie zużywaj lepszych niż cel", note: "Przedmioty z afiksem wyższym niż w celu są używane tylko wtedy, gdy bez nich nie ma żadnej ścieżki.", sum: v => `lepsze niż cel: <b>${v ? "tylko w ostateczności" : "dozwolone"}</b>` },
@@ -2644,7 +2667,9 @@ onmessage = e => {
     { g: "Szukanie ścieżki", k: "depth", def: 5, num: [1, 8], label: "Głębokość drzewa w Najtańszej", note: "Ile poziomów połączeń w dół od celu (1–8). Więcej = dłuższe ścieżki z tańszych przedmiotów.", sum: v => `głębokość: <b>${v}</b>` },
     { g: "Aukcja", k: "affordOnly", def: false, label: "Tylko na co mnie stać", note: "Pomija oferty droższe niż twoja kasa. Oferty z ceną „brak” zostają.", sum: v => `tylko na co mnie stać: <b>${v ? "tak" : "nie"}</b>` },
     { g: "Najlepszy możliwy", k: "bestBases", def: false, label: "Uwzględnij bazy", note: "Wyłączone: liczą się tylko afiksy. Włączone: baza rozstrzyga remisy.", na: basesNA, sum: v => `bazy: <b>${v ? "rozstrzygają remisy" : "nie liczą się"}</b>` },
-    { g: "Przeróbka złomu", k: "trashBases", def: false, label: "Uwzględnij bazy", note: "Wyłączone: liczą się tylko afiksy. Włączone: gdy afiksów nie da się ulepszyć, próbuje ulepszyć bazę.", na: basesNA, sum: v => `bazy: <b>${v ? "ulepszane, gdy afiksy nie mogą" : "nie liczą się"}</b>` },
+    { g: "Przeróbka złomu", k: "trashBases", def: false, label: "Uwzględnij bazy", note: "Wyłączone: liczą się tylko afiksy. Włączone: gdy afiksów nie da się ulepszyć, próbuje ulepszyć bazę. Nie działa razem z dwoma ustawieniami poniżej.", na: basesNA, sum: v => `bazy: <b>${v ? "ulepszane, gdy afiksy nie mogą" : "nie liczą się"}</b>` },
+    { g: "Przeróbka złomu", k: "trashBig", def: false, label: "Tylko duże ulepszenia", note: "Łączy tylko wtedy, gdy oba afiksy wyniku są wyższe niż w obu składnikach. Działa w trybie Oba afiksy.", na: bothNA, sum: v => `tylko duże: <b>${v ? "tak" : "nie"}</b>` },
+    { g: "Przeróbka złomu", k: "trashDir", def: "any", opts: [["any", "dowolny"], ["p", "w stronę prefiksu"], ["s", "w stronę sufiksu"]], label: "Kierunek ulepszeń", note: "„W stronę prefiksu”: każde połączenie podnosi prefiks, a sufiks zostaje co najmniej taki jak w lepszym składniku, więc nic nie traci (duże ulepszenia też się liczą). „W stronę sufiksu” odwrotnie. Działa w trybie Oba afiksy; przy „Tylko duże ulepszenia” nie ma znaczenia.", na: bothNA, sum: v => `kierunek: <b>${v === "p" ? "prefiks" : v === "s" ? "sufiks" : "dowolny"}</b>` },
   ];
   const setVal = d => store[d.k] ?? d.def;
   const setDef = k => SETTINGS.find(d => d.k === k);
@@ -2652,12 +2677,15 @@ onmessage = e => {
     const groups = [...new Set(SETTINGS.map(d => d.g))];
     $("setList").innerHTML = groups.map(g => `<div class="setgrp"><h3>${g}</h3>${SETTINGS.filter(d => d.g === g).map(d => {
       const na = d.na ? d.na() : "", v = setVal(d);
-      const input = d.num ? `<input type="number" min="${d.num[0]}" max="${d.num[1]}" value="${v}" data-set="${d.k}">` : `<input type="checkbox" data-set="${d.k}"${v ? " checked" : ""}${na ? " disabled" : ""}>`;
+      const input = d.num ? `<input type="number" min="${d.num[0]}" max="${d.num[1]}" value="${v}" data-set="${d.k}">`
+        : d.opts ? `<select data-set="${d.k}"${na ? " disabled" : ""}>${d.opts.map(([o, t]) => `<option value="${o}"${o === v ? " selected" : ""}>${t}</option>`).join("")}</select>`
+        : `<input type="checkbox" data-set="${d.k}"${v ? " checked" : ""}${na ? " disabled" : ""}>`;
       return `<label class="setrow${na ? " na" : ""}">${input}<b>${d.label}</b><span class="note">${d.note}${na ? ` <i>Teraz nie dotyczy (${catName(catIdx)}: ${na}).</i>` : ""}</span></label>`;
     }).join("")}</div>`).join("");
     $("setList").querySelectorAll("[data-set]").forEach(inp => inp.onchange = () => {
       const d = setDef(inp.dataset.set);
       if (d.num) { const v = Math.max(d.num[0], Math.min(d.num[1], Math.round(+inp.value) || d.def)); inp.value = v; store[d.k] = v; }
+      else if (d.opts) store[d.k] = inp.value;
       else store[d.k] = inp.checked;
       persist();
       if (d.k === "affordOnly") refresh(); else renderSetSums();
@@ -2666,12 +2694,12 @@ onmessage = e => {
   function renderSetSums() {
     const line = (id, keys) => {
       const el = $(id); if (!el) return;
-      const parts = keys.map(setDef).map(d => { const na = d.na ? d.na() : ""; return na ? na : d.sum(setVal(d)); });
+      const parts = [...new Set(keys.map(setDef).map(d => { const na = d.na ? d.na() : ""; return na ? na : d.sum(setVal(d)); }))];
       el.innerHTML = `Ustawienia: ${parts.join(" · ")}<button class="linkbtn" data-goset>Zmień</button>`;
       el.querySelector("[data-goset]").onclick = () => setView("settings");
     };
     line("findSet", (store.mode || "optimal") === "cheap" ? ["noOver", "depth"] : ["noOver", "deep"]);
-    line("aucSet", ["affordOnly"]); line("bestSet", ["bestBases"]); line("trashSet", ["trashBases"]);
+    line("aucSet", ["affordOnly"]); line("bestSet", ["bestBases"]); line("trashSet", ["trashBases", "trashBig", "trashDir"]);
   }
   const LOCK_SVG = on => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"${on ? ' fill="currentColor" fill-opacity=".3"' : ""}/><path d="${on ? "M8 11V7a4 4 0 0 1 8 0v4" : "M8 11V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
   const lockIcon = (p, i) => `<button class="lockico${p.off ? "" : " on"}" data-toggle="${i}" title="${p.off ? "Odblokowany: nic nie rezerwuje. Kliknij, żeby zablokować." : "Zablokowany: rezerwuje przedmioty. Kliknij, żeby odblokować."}" aria-label="${p.off ? "Zablokuj plan" : "Odblokuj plan"}" aria-pressed="${!p.off}">${LOCK_SVG(!p.off)}</button>`;
@@ -2682,7 +2710,7 @@ onmessage = e => {
     const pill = st => st === "off" ? `<span class="pill">Odblokowany</span>` : st === "ready" ? `<span class="pill ok">Gotowy</span>` : st === "broken" ? `<span class="pill bad">Zepsuty</span>` : st === "buy" ? `<span class="pill aucp">Kup na aukcji</span>` : `<span class="pill warn">Czeka</span>`;
     list.innerHTML = s.plans.map((p, i) => {
       const st = A.status[i], need = p.missing.length - st.found.filter(Boolean).length;
-      return `<li><div class="plan-main"><span class="namerow">${pill(st.state)} ${itemHTML(p.result)}${lockIcon(p, i)}</span><div class="note">${st.state === "off" ? "Nic nie rezerwuje. Zablokuj, żeby znów zarezerwować przedmioty." : st.state === "broken" ? "Części zarezerwowanych przedmiotów nie ma już w ekwipunku ani na liście aukcji." : need ? `Czeka na ${PRZ(need)}.` : st.toBuy ? `Kup ${PRZ(st.toBuy)} z aukcji, potem ${POL(p.steps)}.` : `${POL(p.steps)}, wszystko pod ręką.`}${(p.done || []).length ? ` · zrobione ${p.done.length}/${p.steps}` : ""}</div></div>
+      return `<li><div class="plan-main"><span class="namerow"><span class="planno" title="Plan ${i + 1}">${i + 1}.</span>${pill(st.state)} ${itemHTML(p.result)}${lockIcon(p, i)}</span><div class="note">${st.state === "off" ? "Nic nie rezerwuje. Zablokuj, żeby znów zarezerwować przedmioty." : st.state === "broken" ? "Części zarezerwowanych przedmiotów nie ma już w ekwipunku ani na liście aukcji." : need ? `Czeka na ${PRZ(need)}.` : st.toBuy ? `Kup ${PRZ(st.toBuy)} z aukcji, potem ${POL(p.steps)}.` : `${POL(p.steps)}, wszystko pod ręką.`}${(p.done || []).length ? ` · zrobione ${p.done.length}/${p.steps}` : ""}</div></div>
         <div class="row"><button class="btn small" data-view="${i}">Pokaż</button><button class="btn small ghost" data-del="${i}">Usuń</button></div></li>`;
     }).join("");
     list.querySelectorAll("[data-view]").forEach(b => b.onclick = () => viewPlan(+b.dataset.view));

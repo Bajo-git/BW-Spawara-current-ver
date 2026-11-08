@@ -69,6 +69,8 @@ Run from the repo root; page paths are relative.
 | `node tests/twomissing.js index.html` | Manual plan "Dwa brakujące": first pairs balanced and low |
 | `node tests/sheet.js index.html outdir` | Arkusze: miniatures for every category, the pop-up table (names in cells, same-result highlight, Esc, outside click), the phone button; screenshots |
 | `node tests/treetouch.js index.html [outdir]` | Phone tree: pinch zooms around the fingers, one-finger swipe scrolls, a tap while zoomed reaches the card, the page never gets wider than the screen |
+| `node tests/trashopts.js index.html` | Przeróbka złomu: default, Tylko duże ulepszenia, w stronę prefiksu / sufiksu; every step obeys its rule (expect `0`) |
+| `node tests/planlabels.js index.html` | Three saved plans; each reserved item's "W planie N" names the plan that holds it |
 | `node tests/mobile.js index.html outdir` | Phone layout at 390×844 with touch: screenshots of every screen, checks for sideways scrolling |
 | `node tests/cardfit.js index.html 80 200` | Longest names with tiers fit in tree cards (expect `0 overflow`) |
 | `node tests/filtcheck.js index.html` | Manual-plan filter matches names across tier numbers |

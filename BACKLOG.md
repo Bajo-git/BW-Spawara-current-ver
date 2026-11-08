@@ -7,6 +7,15 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 48 (2026-11-08)
+- Fixed: the inventory and auction pill "W planie N" showed the number of reserved copies, so any
+  single reserved item read "W planie 1". It now names the plan(s) holding the item ("W planie 3",
+  "W planach 1, 3"), with each plan's target on hover; Plany numbers its plans to match.
+- Przeróbka złomu, Ustawienia (Oba afiksy mode): "Tylko duże ulepszenia" (both affixes rise) and
+  "Kierunek ulepszeń" (dowolny / w stronę prefiksu / w stronę sufiksu: every combine raises that
+  affix, the other stays at least as good as in the better input). Either one turns base-only
+  upgrades off. Steps say "ulepszenie prefiksu/sufiksu". tests/trashopts.js, tests/planlabels.js.
+
 ## Shipped in version 47 (2026-11-06)
 - Tree on phones: the tree box no longer stretches with a zoomed tree (grid child min-width), so
   zoomed trees scroll inside a phone-wide box; one finger scrolls natively (momentum, taps stay

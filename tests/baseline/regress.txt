@@ -75,18 +75,18 @@ TRASH rings s: 3 połączenia: z 16 wolnych przedmiotów zostanie 13. 2 kroki po
 PASTE: Znaleziono 3 przedmioty w 2 kategoriach. Sprawdź listę i dodaj. GŁOWA LEGENDARNYutwardzony helm podroznika ×1 czapka podroznika ×1 PALUCHY miedziany sygnet urody ×1 Zastąp ekwipunek Dodaj do ekwipunku Zastąpienie dotyczy tylko kategorii powyżej. Blokady zostają na przedmiotach, które nadal są w ekwipunku.
 INV after paste: LEGENDARNYutwardzony kominiarka wieszcza Zablokuj − 1 + × LEGENDARNYwzmocniony helm ochrony Zablokuj − 1 + × LEGENDARNYutwardzony czapka zmyslow Zablokuj − 1 + × LEGENDARNYrogaty opaska wytrzymalosci Zablokuj − 1 + × LEGENDARNYkrwawy obrecz ochrony Zablokuj − 1 + × LEGENDARNYleniwy bandana pasterza Zablokuj − 1 + × LEGENDARNYkuloodporny helm wieszcza Zablokuj − 1 + × LEGENDARNYtygrysi czapka gladiatora Zablokuj − 1 + × LEGENDARNYozdobny kask ochrony Zablokuj − 1 + × LEGENDARNYruniczny kask przezornosci Zablokuj − 1 + × LEGENDARNYwzmocniony obrecz wytrzymalosci Zablokuj − 1 + × LEGENDARNYutwardzony helm podroznika Zablokuj − 1 + × czapka podroznika Zablokuj − 1 + ×
 AUC paste: Dodano 1 przedmiot (Głowa).
-PLANS: Kup na aukcji Legendarnykrwawy bandana adrenalinyKup 1 przedmiot z aukcji, potem 2 połączenia. PokażUsuń | AUC: LEGENDARNYzlosliwy korona mocy W PLANIE 1 Kupione Utracone
-PLANS after bought: Gotowy Legendarnykrwawy bandana adrenaliny2 połączenia, wszystko pod ręką. PokażUsuń | CASH: 99
+PLANS: 1.Kup na aukcji Legendarnykrwawy bandana adrenalinyKup 1 przedmiot z aukcji, potem 2 połączenia. PokażUsuń | AUC: LEGENDARNYzlosliwy korona mocy W PLANIE 1 Kupione Utracone
+PLANS after bought: 1.Gotowy Legendarnykrwawy bandana adrenaliny2 połączenia, wszystko pod ręką. PokażUsuń | CASH: 99
 AFTER CRAFT: Zrobione. LEGENDARNYkrwawy bandana adrenaliny jest teraz w ekwipunku. | INV: Legendarnyutwardzony kominiarka wieszcza Zablokuj −1+ × Legendarnywzmocniony helm ochrony Zablokuj −1+ × Legendarnyutwardzony czapka zmyslow Zablokuj −1+ × Legendarnyrogaty opaska wytrzymalosci Zablokuj −1+ × Legendarnyleniwy bandana pasterza Zablokuj −1+ × Legendarnytygrysi czapka gladiatora Zablokuj −1+ × Legendarnyozdobny kask ochrony Zablokuj −1+ × Legendarnyruniczny kask przezornosci Zablokuj −1+ × Legendarnywzmocniony obrecz wytrzymalosci Zablokuj −1+ × Legendarnyutwardzony helm podroznika Zablokuj −1+ × czapka podroznika Zablokuj −1+ × Legendarnykrwawy bandana adrenaliny Zablokuj −1+ ×
 LOCK: Legendarnyutwardzony kominiarka wieszcza Zablokowany −1+ ×
-TAB 0: PREFIKS Dowolny lub brak Dowolny Brak utwardzony wzmocniony pomocny ozdobny eleg | trashSeg hidden=true | Ustawienia: bazy: nie liczą sięZmień
-TAB 1: PREFIKS Dowolny lub brak Dowolny Brak wzmocniony cwiekowany wladczy lekki luskow | trashSeg hidden=true | Ustawienia: bazy: nie liczą sięZmień
-TAB 2: PREFIKS Dowolny lub brak Dowolny Brak krotkie pikowane lekkie wzmocnione aksamit | trashSeg hidden=true | Ustawienia: bazy: nie liczą sięZmień
-TAB 3: PREFIKS Dowolny lub brak Dowolny Brak miedziany srebrny szmaragdowy zloty platyn | trashSeg hidden=true | Ustawienia: w tej kategorii bazy się nie licząZmień
-TAB 4: PREFIKS Dowolny lub brak Dowolny Brak miedziany srebrny szmaragdowy zloty platyn | trashSeg hidden=true | Ustawienia: w tej kategorii bazy się nie licząZmień
-TAB 5: PREFIKS Dowolny lub brak Dowolny Brak ostry zebaty kosciany wzmacniajacy kryszta | trashSeg hidden=true | Ustawienia: bazy: nie liczą sięZmień
-TAB 6: PREFIKS Dowolny lub brak Dowolny Brak kosztowny ostry krysztalowy zebaty szeroki | trashSeg hidden=true | Ustawienia: bazy: nie liczą sięZmień
-TAB 7: PREFIKS Brak w tej kategorii BAZA Dowolna krotki luk luk shurek dlugi luk kusza  | trashSeg hidden=true | Ustawienia: bazy: nie liczą sięZmień
-TAB 8: PREFIKS Brak w tej kategorii BAZA Dowolna glock beretta uzi magnum desert eagle  | trashSeg hidden=true | Ustawienia: broń palna: zawsze liczy się bazaZmień
-TAB 9: PREFIKS Brak w tej kategorii BAZA Dowolna karabin m. polautomat s. karabin s. ak | trashSeg hidden=true | Ustawienia: broń palna: zawsze liczy się bazaZmień
+TAB 0: PREFIKS Dowolny lub brak Dowolny Brak utwardzony wzmocniony pomocny ozdobny eleg | trashSeg hidden=true | Ustawienia: bazy: nie liczą się · tylko duże: nie · kierunek: dowolnyZmień
+TAB 1: PREFIKS Dowolny lub brak Dowolny Brak wzmocniony cwiekowany wladczy lekki luskow | trashSeg hidden=true | Ustawienia: bazy: nie liczą się · tylko duże: nie · kierunek: dowolnyZmień
+TAB 2: PREFIKS Dowolny lub brak Dowolny Brak krotkie pikowane lekkie wzmocnione aksamit | trashSeg hidden=true | Ustawienia: bazy: nie liczą się · tylko duże: nie · kierunek: dowolnyZmień
+TAB 3: PREFIKS Dowolny lub brak Dowolny Brak miedziany srebrny szmaragdowy zloty platyn | trashSeg hidden=true | Ustawienia: w tej kategorii bazy się nie liczą · tylko duże: nie · kierunek: dowolnyZmień
+TAB 4: PREFIKS Dowolny lub brak Dowolny Brak miedziany srebrny szmaragdowy zloty platyn | trashSeg hidden=true | Ustawienia: w tej kategorii bazy się nie liczą · tylko duże: nie · kierunek: dowolnyZmień
+TAB 5: PREFIKS Dowolny lub brak Dowolny Brak ostry zebaty kosciany wzmacniajacy kryszta | trashSeg hidden=true | Ustawienia: bazy: nie liczą się · tylko duże: nie · kierunek: dowolnyZmień
+TAB 6: PREFIKS Dowolny lub brak Dowolny Brak kosztowny ostry krysztalowy zebaty szeroki | trashSeg hidden=true | Ustawienia: bazy: nie liczą się · tylko duże: nie · kierunek: dowolnyZmień
+TAB 7: PREFIKS Brak w tej kategorii BAZA Dowolna krotki luk luk shurek dlugi luk kusza  | trashSeg hidden=true | Ustawienia: bazy: nie liczą się · ta kategoria nie ma obu afiksówZmień
+TAB 8: PREFIKS Brak w tej kategorii BAZA Dowolna glock beretta uzi magnum desert eagle  | trashSeg hidden=true | Ustawienia: broń palna: zawsze liczy się baza · ta kategoria nie ma obu afiksówZmień
+TAB 9: PREFIKS Brak w tej kategorii BAZA Dowolna karabin m. polautomat s. karabin s. ak | trashSeg hidden=true | Ustawienia: broń palna: zawsze liczy się baza · ta kategoria nie ma obu afiksówZmień
 ERRORS: []

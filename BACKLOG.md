@@ -7,6 +7,13 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 51 (2026-11-09)
+- Najszybsza takes the shortest route outright: "Nie zużywaj lepszych niż cel" no longer applies to
+  it (Ustawienia says so). Only between routes with the same number of combines: cheapest items
+  (lowest route cost), then fewest auction items. The v50 "krótsza ścieżka" box is gone.
+  fastbench with the setting on: 60/60 proven shortest (v50: 37, 18 longer); tie check: cheaper
+  items in 8 of 50 equal-length cases, dearer in none.
+
 ## Shipped in version 50 (2026-11-09)
 - Najszybsza always ranks by fewest combines first (auction purchases are not combines), then
   fewest auction items, then cost; the forward-backward engine stops as soon as its shortest route

@@ -887,7 +887,7 @@ function makeEngine(DATA, store) {
       const cands = [];
       const nAuc = c => Math.floor(c.oc / AUCTION_PENALTY);
       // Najszybsza: the fewest items (= fewest combines) before anything else; buying at auction is not a combine
-      const cmp = opts.mode === "fast" ? (a, b) => a.W - b.W || a.L - b.L || nAuc(a) - nAuc(b) || a.oc - b.oc
+      const cmp = opts.mode === "fast" ? (a, b) => a.W - b.W || a.L - b.L || a.oc % AUCTION_PENALTY - b.oc % AUCTION_PENALTY || nAuc(a) - nAuc(b)
         : (a, b) => a.W - b.W || nAuc(a) - nAuc(b) || ord({ pop: a.L, oc: a.oc }, { pop: b.L, oc: b.oc });
       const add = c => {
         if (opts.mode === "optimal") { if (cands.length < 20000) cands.push(c); return; }
@@ -1187,7 +1187,8 @@ function makeEngine(DATA, store) {
       }
       return F.routes.length && !redundant(C, F.routes[0].tree, T, avoid) ? F : { ...F, routes: [] };
     }
-    if (store.noOver === false) return findRoutesIn(C, T, units, mode, deep, avoid);
+    // Najszybsza takes the shortest route outright, better items included (they only lose ties)
+    if (store.noOver === false || mode === "fast") return findRoutesIn(C, T, units, mode, deep, avoid);
     const cap = avoid && avoid.set || T;
     // first: no item above the target's tier anywhere among what you use, buy or still need to find
     // (items made inside the route may go higher); this may take more steps and more missing items
@@ -1217,12 +1218,6 @@ function makeEngine(DATA, store) {
       // better version of what you are making
       const G = findRoutesIn(C, T, units.filter(u => !atLeastTarget(C, T, u)), mode, deep, avoid);
       if (G.routes.length && G.routes[0].missing < r.missing) return G.routes[0].missing === 0 ? { ...G, alt: F } : { ...F, alt: G };
-    }
-    // Najszybsza: a shorter complete route that needs better items is offered, never chosen
-    if (mode === "fast" && r.missing === 0 && r.steps > 1) {
-      phase("Sprawdzam krótszą ścieżkę z lepszymi przedmiotami");
-      const G = findRoutesIn(C, T, units.filter(u => !atLeastTarget(C, T, u)), mode, deep, avoid);
-      if (G.routes.length && G.routes[0].missing === 0 && G.routes[0].steps < r.steps) return { ...F, alt: G };
     }
     return F;
   }
@@ -1291,13 +1286,14 @@ function makeEngine(DATA, store) {
       for (const r of own) if (r.buy < bestBuy) { ladder.push(r); bestBuy = r.buy; }
       return { R, routes: ladder, ladder: true };
     }
-    // Najszybsza: the fewest combines first (buying at auction is not a combine), then the fewest
-    // auction items, then the cheapest
+    // Najszybsza: the fewest combines first (buying at auction is not a combine); among routes just
+    // as short, the cheapest items (lowest tiers, so items better than the target lose ties), then
+    // the fewest auction items
     const nA = x => Math.floor(x.oc / AUCTION_PENALTY);
-    cs.sort((a, b) => a.L - b.L || nA(a) - nA(b) || a.oc - b.oc);
+    cs.sort((a, b) => a.L - b.L || a.oc % AUCTION_PENALTY - b.oc % AUCTION_PENALTY || nA(a) - nA(b));
     const routes = [];
     for (let i = 0; i < cs.length && i < 400 && routes.length < 16; i++) { const r = concretizeRaw(C, cs[i].raw(), R.T, R.WILD); if (!redundant(C, r.tree, R.T, avoid)) routes.push(r); }
-    routes.sort((a, b) => a.steps - b.steps || a.auction - b.auction || a.over - b.over || a.cost - b.cost);
+    routes.sort((a, b) => a.steps - b.steps || a.cost - b.cost || a.auction - b.auction);
     const out = [], seen = new Set();
     for (const r of routes) { const sig = JSON.stringify(r.tree); if (seen.has(sig)) continue; seen.add(sig); out.push(r); if (out.length === 3) break; }
     return { R, routes: out };
@@ -2098,8 +2094,7 @@ onmessage = e => {
       if (!F.alt) return "";
       const o = other(), oR = o.routes[0], mine = betterIn(cur);
       if (!mine.length) { const used = betterIn(o);
-        const shorter = !oR.missing && !cur.routes[0].missing && oR.steps < cur.routes[0].steps;
-        return `<div class="altbox"><div><b>${shorter ? `Jest krótsza ścieżka: ${oR.steps} ${pl(oR.steps, "połączenie", "połączenia", "połączeń")} zamiast ${cur.routes[0].steps}` : `Jest ścieżka z ${oR.missing ? missTxt(oR.missing) : "wszystkim pod ręką"}`}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">${shorter ? "Ustawienie „Nie zużywaj lepszych niż cel” sięga po nie tylko wtedy, gdy bez nich czegoś brakuje, więc pokazana jest dłuższa ścieżka bez nich." : "Ustawienie „Nie zużywaj lepszych niż cel” sięga po nie tylko wtedy, gdy dają pełną ścieżkę, więc pokazana jest ścieżka bez nich."}</div>` : ""}<button class="btn small" id="altSwap">Pokaż ścieżkę z nimi</button></div>`; }
+          return `<div class="altbox"><div><b>Jest ścieżka z ${oR.missing ? missTxt(oR.missing) : "wszystkim pod ręką"}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">Ustawienie „Nie zużywaj lepszych niż cel” sięga po nie tylko wtedy, gdy dają pełną ścieżkę, więc pokazana jest ścieżka bez nich.</div>` : ""}<button class="btn small" id="altSwap">Pokaż ścieżkę z nimi</button></div>`; }
       return `<div class="altbox"><div><b>Ta ścieżka zużywa przedmioty lepsze niż wynik:</b> ${mine.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">Bez nich jest tylko ścieżka z ${missTxt(oR.missing)}, więc pokazana jest ta pełna (ustawienie: lepsze niż cel tylko w ostateczności).</div>` : ""}<button class="btn small" id="altSwap">${cur === F ? "Pokaż ścieżkę bez nich" : "Wróć do ścieżki bez nich"}</button></div>`;
     };
     const modeName = { fast: "najszybsza", cheap: "najtańsza", optimal: "optymalna" }[mode];
@@ -2693,7 +2688,7 @@ onmessage = e => {
   const bothNA = () => { const C = compile(); return !(C.hasP && C.hasS) ? "ta kategoria nie ma obu afiksów" : (store.trashMode || "both") !== "both" ? "działa tylko w trybie Oba afiksy" : ""; };
   const basesNA = () => { const C = compile(); return !C.hasP && !C.hasS ? "broń palna: zawsze liczy się baza" : ringLike() ? "w tej kategorii bazy się nie liczą" : ""; };
   const SETTINGS = [
-    { g: "Szukanie ścieżki", k: "noOver", def: true, label: "Nie zużywaj lepszych niż cel", note: "Przedmioty z afiksem wyższym niż w celu są używane tylko wtedy, gdy bez nich nie ma żadnej ścieżki.", sum: v => `lepsze niż cel: <b>${v ? "tylko w ostateczności" : "dozwolone"}</b>` },
+    { g: "Szukanie ścieżki", k: "noOver", def: true, label: "Nie zużywaj lepszych niż cel", note: "Przedmioty z afiksem wyższym niż w celu są używane tylko wtedy, gdy bez nich nie ma żadnej ścieżki. Nie dotyczy Najszybszej: ona zawsze bierze najkrótszą ścieżkę, a lepsze przedmioty przegrywają tylko remisy.", na: () => (store.mode || "optimal") === "fast" ? "Najszybsza zawsze bierze najkrótszą ścieżkę" : "", sum: v => `lepsze niż cel: <b>${v ? "tylko w ostateczności" : "dozwolone"}</b>` },
     { g: "Szukanie ścieżki", k: "deep", def: false, label: "Głębokie szukanie", note: "Sprawdza większe grupy przedmiotów. Trwa do 15 s; można je przerwać przyciskiem Anuluj. Nie dotyczy Najtańszej.", sum: v => `głębokie szukanie: <b>${v ? "wł." : "wył."}</b>` },
     { g: "Szukanie ścieżki", k: "depth", def: 5, num: [1, 8], label: "Głębokość drzewa w Najtańszej", note: "Ile poziomów połączeń w dół od celu (1–8). Więcej = dłuższe ścieżki z tańszych przedmiotów.", sum: v => `głębokość: <b>${v}</b>` },
     { g: "Aukcja", k: "affordOnly", def: false, label: "Tylko na co mnie stać", note: "Pomija oferty droższe niż twoja kasa. Oferty z ceną „brak” zostają.", sum: v => `tylko na co mnie stać: <b>${v ? "tak" : "nie"}</b>` },

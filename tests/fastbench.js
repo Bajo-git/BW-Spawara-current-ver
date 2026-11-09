@@ -1,6 +1,7 @@
 // Najszybsza vs the true shortest route. Random 14-item inventories (+ a few auction items), random
 // targets: the reference is the exact search over every group (deep, nothing excluded), which
 // proves the fewest items for a complete route. Prints how often each build is longer.
+// NOOVER=1 (env): run the builds with "Nie zużywaj lepszych niż cel" on.
 // SIZE=24 (env): bigger inventories; the reference is then the shorter of the builds, not a proof.
 // usage: node tests/fastbench.js A.html [B.html] [cases]
 const fs = require('fs');
@@ -22,7 +23,7 @@ for (let i = 0; cases < N && i < N * 20; i++) {
   const ref = SIZE <= 16 ? builds[0].run(inv, tg, { noOver: false }, true) : builds.map(B => B.run(inv, tg, { noOver: false }, false)).filter(r => r && !r.m).sort((a, b) => a.st - b.st)[0];
   if (!ref || ref.m) continue; // only targets with a complete route
   cases++;
-  builds.forEach((B, k) => { const r = B.run(inv, tg, { noOver: false }, false); const t = tally[k]; if (!r || r.m) t.none++; else if (r.st > ref.st) { t.longer++; t.extra += r.st - ref.st; } else t.shortest++; t.ms += r ? r.ms : 0; });
+  builds.forEach((B, k) => { const r = B.run(inv, tg, { noOver: !!process.env.NOOVER }, false); const t = tally[k]; if (!r || r.m) t.none++; else if (r.st > ref.st) { t.longer++; t.extra += r.st - ref.st; } else t.shortest++; t.ms += r ? r.ms : 0; });
   process.stderr.write('.');
 }
 console.log(`\n${cases} targets with a complete route (${SIZE <= 16 ? "shortest proven by exact search" : "reference: the shorter of the builds"})`);

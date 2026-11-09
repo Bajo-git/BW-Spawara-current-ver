@@ -7,6 +7,14 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 50 (2026-11-09)
+- Najszybsza always ranks by fewest combines first (auction purchases are not combines), then
+  fewest auction items, then cost; the forward-backward engine stops as soon as its shortest route
+  is provably shortest. tests/fastbench.js: 80/80 proven shortest on 14-item inventories (was 79,
+  ~3x faster); on 24-item inventories the old build was longer in 11 of 50 cases, the new never.
+- With "Nie zużywaj lepszych niż cel" on, Najszybsza offers a shorter complete route that needs
+  your better items ("Jest krótsza ścieżka: 2 połączenia zamiast 6…"), never chooses it.
+
 ## Shipped in version 49 (2026-11-09)
 - Plans colour-coded: six colours by plan number, shared by the number badge in Plany and the
   "W planie N" labels in the inventory and auction list (several plans: each number in its colour).

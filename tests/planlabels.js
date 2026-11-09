@@ -23,5 +23,6 @@ const { chromium } = require('playwright'); const fs = require('fs'), path = req
   });
   console.log(out.plans.join(' · '));
   for (const r of out.rows) console.log(`  ${r.label.padEnd(16)} ${r.name.replace(/\d+/g, '')}   [${r.tip}]`);
+  await pg.click('.nav[data-view="plans"]'); await pg.screenshot({ path: (process.argv[3] || '.') + '/planlabels.png' });
   console.log('errors', errs); await b.close();
 })();

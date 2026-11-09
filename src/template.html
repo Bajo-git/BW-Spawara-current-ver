@@ -58,6 +58,8 @@ input[type=number] { font-family: var(--mono); text-align: center; }
 ul.inv { list-style: none; margin: 0; padding: 0; display: grid; }
 ul.inv li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 10px; align-items: center; padding: 8px 2px; border-top: 1px solid var(--line); }
 ul.inv li:first-child { border-top: 0; }
+/* long lists: rows outside the scroll box skip layout and paint until they scroll in */
+ul.inv li { content-visibility: auto; contain-intrinsic-size: auto 47px; }
 .qty { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .qty button { border: 0; background: var(--sunk); color: var(--ink); width: 28px; height: 28px; cursor: pointer; font: 600 1rem var(--body); }
 .qty span { font-family: var(--mono); min-width: 28px; text-align: center; font-variant-numeric: tabular-nums; }
@@ -381,7 +383,12 @@ details.treebox[open] > summary::before { content: "▾ "; }
   .mmore button.on { background: var(--sunk); color: var(--accent-hi); }
 }
 
-.planno { font: 700 .82rem var(--mono); color: var(--muted); margin-right: 2px; }
+.pc0 { --pc: #f08a8a; } .pc1 { --pc: #5fd0c0; } .pc2 { --pc: #b59cff; } .pc3 { --pc: #e8c25a; } .pc4 { --pc: #7fb6ff; } .pc5 { --pc: #c3dd6e; }
+.planno { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 6px; background: var(--pc, var(--muted)); color: #140b0c; font: 700 .78rem var(--mono); margin-right: 4px; }
+.pill.plan[class*="pc"] { color: var(--pc); background: color-mix(in srgb, var(--pc) 13%, transparent); }
+.pill.plan.multi b { color: var(--pc); }
+.savewarn { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 50; max-width: min(560px, 92vw); padding: 12px 16px; border: 1px solid var(--warn); border-radius: 10px; background: #1d1412; color: var(--ink); font-size: .9rem; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+@media (max-width: 700px) { .savewarn { bottom: 86px; } }
 /* sheet cheat sheet: miniatures under the view panel, full tables in a dialog */
 .sheet-h { margin: 0; }
 .sheetthumbs { display: grid; grid-template-columns: repeat(3, minmax(0, 120px)); gap: 10px; }
@@ -505,7 +512,7 @@ table.sheet.k-suffix tbody th, table.sheet.k-suffix thead th:not(.corner) { colo
         <section class="panel" id="vTarget" aria-labelledby="tgt-h">
           <h2 id="tgt-h"><span id="tgtTitle">Szukanie ścieżki</span></h2>
           <div class="picker" id="tgtPicker"></div>
-          <div class="row" id="modeRow">
+          <div class="row">
             <span class="ctl-label">Ścieżka</span>
             <div class="seg" role="group" aria-label="Rodzaj ścieżki" id="modeSeg">
               <button data-v="fast" title="Najmniej połączeń">Najszybsza</button><button data-v="cheap" title="Używa najsłabszych przedmiotów, nawet kosztem większej liczby połączeń">Najtańsza</button><button data-v="optimal" title="Pokazuje, jak użycie większej liczby twoich przedmiotów obniża to, co musisz kupić">Optymalna</button>

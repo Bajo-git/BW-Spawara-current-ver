@@ -11,7 +11,7 @@ const file = process.argv[2], outFile = process.argv[3];
   const rings = fs.readFileSync(require('path').join(__dirname, 'fixtures', 'myrings.js'),'utf8').match(/const raw=`([\s\S]*?)`/)[1];
   const lines = [];
   const clean = s => s.replace(/\s+/g, ' ').replace(/\(?[0-9]+ ms\)?/g, '').replace(/· +·/g, '·').trim();
-  const setup = async (D) => { await pg.evaluate(D => localStorage.setItem('bw-forge-v2', JSON.stringify(D)), D); await pg.reload(); await pg.addStyleTag({ content: 'sup.tier{display:none!important}' }); };
+  const setup = async (D) => { await pg.evaluate(D => localStorage.setItem('bw-forge-v2', JSON.stringify(D)), D); await pg.reload(); await pg.addStyleTag({ content: 'sup.tier{display:none!important} ul.inv li{content-visibility:visible!important}' }); };
   const wait = () => pg.waitForFunction(() => { const x = document.querySelector('#result').innerText; return x && !/^Szukam/.test(x); }, null, { timeout: 120000 });
   const txt = async sel => { await pg.evaluate(() => document.querySelectorAll('sup.tier').forEach(x => x.remove())); return clean(await pg.locator(sel).first().innerText()); };
   const res = async () => txt('#result');

@@ -702,7 +702,18 @@ function makeEngine(DATA, store) {
   const store = (() => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } })();
   // every change goes through persist(), which also drops the cached item allocation
   let allocCache = null;
-  const persist = () => { allocCache = null; try { localStorage.setItem(KEY, JSON.stringify(store)); } catch {} };
+  // a refused save (storage full, some private modes) is told once instead of losing changes silently
+  let saveWarned = false;
+  const persist = () => {
+    allocCache = null;
+    try { localStorage.setItem(KEY, JSON.stringify(store)); }
+    catch {
+      if (saveWarned) return; saveWarned = true;
+      const t = document.createElement("div"); t.className = "savewarn"; t.setAttribute("role", "alert");
+      t.innerHTML = `Przeglądarka nie pozwala zapisać danych (brak miejsca albo tryb prywatny). Zmiany działają, ale znikną po zamknięciu strony. <button class="linkbtn">OK</button>`;
+      t.querySelector("button").onclick = () => t.remove(); document.body.appendChild(t);
+    }
+  };
   const E = makeEngine(DATA, store);
   const { key, fromKey, bitsOf, popcnt, topBit, isOne, matchesLoose, preSet, preimage, lowOf, payOf, priceOrder, targetSets, findRoutes, overOf, usesOver, capWild, redundant, walk } = E;
   const compile = (ci = catIdx) => E.compile(ci);
@@ -827,12 +838,15 @@ function makeEngine(DATA, store) {
     return A;
   }
   const tooDear = x => store.cash != null && payOf(x) > store.cash;
+  // each saved plan has one of six colours (by its number), shared by Plany and the "W planie" labels
+  const planCls = i => `pc${i % 6}`;
   // "W planie 3" / "W planach 1, 3": which saved plans (numbered as in Plany) hold copies of this item
   function planPill(by, k) {
     const m = by && by.get(k); if (!m || !m.size) return "";
     const s = slot(), nums = [...m.keys()].sort((a, b) => a - b);
     const tip = nums.map(i => `Plan ${i + 1}: ${itemText(s.plans[i].result)}${m.get(i) > 1 ? ` (${m.get(i)} szt.)` : ""}`).join("; ");
-    return `<span class="pill plan" title="${esc(tip)}">${nums.length === 1 ? "W planie" : "W planach"} ${nums.map(i => i + 1).join(", ")}</span>`;
+    if (nums.length === 1) return `<span class="pill plan ${planCls(nums[0])}" title="${esc(tip)}">W planie ${nums[0] + 1}</span>`;
+    return `<span class="pill plan multi" title="${esc(tip)}">W planach ${nums.map(i => `<b class="${planCls(i)}">${i + 1}</b>`).join(", ")}</span>`;
   }
   // auction listings, one entry per copy, cheapest first; plans reserve the cheapest copies
   function aucCopies(ci = catIdx) {
@@ -2116,7 +2130,7 @@ onmessage = e => {
     const pill = st => st === "off" ? `<span class="pill">Odblokowany</span>` : st === "ready" ? `<span class="pill ok">Gotowy</span>` : st === "broken" ? `<span class="pill bad">Zepsuty</span>` : st === "buy" ? `<span class="pill aucp">Kup na aukcji</span>` : `<span class="pill warn">Czeka</span>`;
     list.innerHTML = s.plans.map((p, i) => {
       const st = A.status[i], need = p.missing.length - st.found.filter(Boolean).length;
-      return `<li><div class="plan-main"><span class="namerow"><span class="planno" title="Plan ${i + 1}">${i + 1}.</span>${pill(st.state)} ${itemHTML(p.result)}${lockIcon(p, i)}</span><div class="note">${st.state === "off" ? "Nic nie rezerwuje. Zablokuj, żeby znów zarezerwować przedmioty." : st.state === "broken" ? "Części zarezerwowanych przedmiotów nie ma już w ekwipunku ani na liście aukcji." : need ? `Czeka na ${PRZ(need)}.` : st.toBuy ? `Kup ${PRZ(st.toBuy)} z aukcji, potem ${POL(p.steps)}.` : `${POL(p.steps)}, wszystko pod ręką.`}${(p.done || []).length ? ` · zrobione ${p.done.length}/${p.steps}` : ""}</div></div>
+      return `<li><div class="plan-main"><span class="namerow"><span class="planno ${planCls(i)}" title="Plan ${i + 1}">${i + 1}</span>${pill(st.state)} ${itemHTML(p.result)}${lockIcon(p, i)}</span><div class="note">${st.state === "off" ? "Nic nie rezerwuje. Zablokuj, żeby znów zarezerwować przedmioty." : st.state === "broken" ? "Części zarezerwowanych przedmiotów nie ma już w ekwipunku ani na liście aukcji." : need ? `Czeka na ${PRZ(need)}.` : st.toBuy ? `Kup ${PRZ(st.toBuy)} z aukcji, potem ${POL(p.steps)}.` : `${POL(p.steps)}, wszystko pod ręką.`}${(p.done || []).length ? ` · zrobione ${p.done.length}/${p.steps}` : ""}</div></div>
         <div class="row"><button class="btn small" data-view="${i}">Pokaż</button><button class="btn small ghost" data-del="${i}">Usuń</button></div></li>`;
     }).join("");
     list.querySelectorAll("[data-view]").forEach(b => b.onclick = () => viewPlan(+b.dataset.view));

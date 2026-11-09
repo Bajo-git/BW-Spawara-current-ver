@@ -7,6 +7,27 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 49 (2026-11-09)
+- Plans colour-coded: six colours by plan number, shared by the number badge in Plany and the
+  "W planie N" labels in the inventory and auction list (several plans: each number in its colour).
+- Faster inventory edits: list rows outside the scroll box skip layout (content-visibility);
+  "+" / lock on a 300-row inventory 51 → 24 ms in the page. Regression harness forces rows visible
+  when reading text.
+- A refused save (storage full, private mode) shows a one-time warning instead of failing silently.
+- Review: no unused functions, ids or styles left (one stray id removed).
+
+## Review suggestions (2026-11-09, not started)
+- Export / import of all data to a file (backup; moving between the artifact and the downloaded app).
+- Plans that recover partly when only some of their items come back.
+- Optymalna "ugly loop" (above).
+- Inventory: update only the changed row on + / lock, and one delegated click handler per list,
+  for inventories of 1,000+ rows.
+- Exhaustive top-down search as an option for deep ladders (research/2026-11-top-down).
+- One `npm test` for the fast checks; make the regression harness wait for each result (its
+  occasional garbled FIND line is a stale read).
+- Split src/app.js (2,300 lines) into engine and UI files joined by build.py; engine tests in
+  Node without a browser.
+
 ## Shipped in version 48 (2026-11-08)
 - Fixed: the inventory and auction pill "W planie N" showed the number of reserved copies, so any
   single reserved item read "W planie 1". It now names the plan(s) holding the item ("W planie 3",

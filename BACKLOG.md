@@ -7,6 +7,14 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 53 (2026-11-10)
+- "Zrób ręcznie" reworked into a bottom-up workbench (user feedback: no target card at the start).
+  Empty bench; first dropped item becomes a card; an item dropped on any card combines with it and
+  the result appears above; results and lower cards take further drops. Non-combining drops are
+  refused. List + Połącz for phones, Cofnij, Usuń zaznaczony, Wyczyść stół, Zapisz jako plan; the
+  header compares the result with the target. Dropping onto cards of a "Zbuduj plan" tree keeps the
+  v52 behaviour. tests/manhand.js rewritten for the workbench.
+
 ## Shipped in version 52 (2026-11-10)
 - Ręczny plan: "Zrób ręcznie" next to "Zbuduj plan" starts an empty builder. Drag and drop
   (computer) from Ekwipunek / Aukcja onto tree cards: a fitting item fills the card; an item that

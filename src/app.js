@@ -1696,7 +1696,6 @@ onmessage = e => {
     if (!nodes.includes(man.sel)) man.sel = nodes.find(n => !n.fill) || man.root;
     const selId = nodes.indexOf(man.sel);
     const head = man.targetBelow ? `<div class="verdict bad">Czerwony element to cel albo przedmiot, który jest już wyżej w tej samej gałęzi. Nic nie może powstawać z samego siebie. Kliknij go i wybierz inaczej.</div>` : man.broken ? `<div class="verdict bad">Czerwone elementy nie pasują: wybrany przedmiot nie daje tego, czego potrzeba wyżej, więc kroki nad nim też się psują. Kliknij go i wybierz inaczej albo zmień partnera (jego „Potrzebne” pokazuje, co pasowałoby do twojego wyboru).</div>`
-      : !man.root.fill && man.hand ? `<div class="verdict miss">Ręczny plan od zera: <b>${esc(man.desc)}</b>. ${narrow() ? "Kliknij cel i złóż go z dwóch przedmiotów poniżej." : "Przeciągnij przedmiot z ekwipunku na cel albo kliknij cel i złóż go z dwóch przedmiotów poniżej."}</div>`
       : !man.root.fill ? `<div class="verdict bad">Nic z twoich przedmiotów nie daje <b>${esc(man.desc)}</b> automatycznie. Wybierz przedmioty poniżej.</div>`
       : miss ? `<div class="verdict miss">Ręczny plan: brakuje ${PRZ(miss)}${auc ? `, ${auc} z aukcji` : ""}. Kliknij element drzewa, żeby go zmienić.</div>`
       : `<div class="verdict ok">Ręczny plan gotowy: ${POL(st)}${auc ? `, ${auc} z aukcji` : ""}. Kliknij element drzewa, żeby go zmienić.</div>`;
@@ -1736,7 +1735,7 @@ onmessage = e => {
     hookSteps(out, man.done);
     if ($("manSave")) $("manSave").onclick = () => savePlan(tree, man.desc + " (ręczny)", st, [...man.done]);
     $("manAuto").onclick = async () => { const m = man, root = await manFillRoot(); if (!root || man !== m) return; man.root = root; man.sel = null; manRender(); };
-    $("manClear").onclick = () => { man.root = slotNode(man.T); man.sel = man.root; man.hand = true; manRender(); };
+    $("manClear").onclick = () => { man.root = slotNode(man.T); man.sel = man.root; manRender(); };
   }
   // the edit panel for the selected element: every way to fill it, and any of your free items
   function manEditor(n, isRoot) { return withBanned(n, () => manEditorIn(n, isRoot)); }
@@ -1852,19 +1851,93 @@ onmessage = e => {
     slot().target = target; persist();
     const C = compile(), T = targetSets(C, target);
     const desc = targetDesc(C, target);
+    bench = null;
     man = { C, T, desc, units: freeUnits().concat(freeAuction()), root: null, sel: null };
     man.root = slotNode(T);
     const m = man, root = await manFillRoot();
     if (!root || man !== m) return;
     man.root = root; manRender();
   };
-  // "Zrób ręcznie": the same builder, starting empty; you fill it by dragging items or picking pairs
+  // ---- "Zrób ręcznie": a workbench built from the bottom up ----
+  // Starts empty. The first item dropped becomes a card; an item dropped on any card combines with it,
+  // and the result appears above the two (a result can take more drops, and so can any card below).
+  // Phones (no dragging): pick an item from the list and press the button. Each copy is used once.
+  let bench = null; // { C, T, desc, units, root, sel, hist }
+  const bItem = n => n.u ? fromKey(key(n.u)) : bench.C.combItem(bItem(n.kids[0]), bItem(n.kids[1]));
+  const bClone = n => n && (n.u ? { u: n.u } : { kids: n.kids.map(bClone) });
+  function bFree() {
+    const av = new Map();
+    for (const u of bench.units) { const k = ukey(u); if (!av.has(k)) av.set(k, []); av.get(k).push(u); }
+    (function use(n) { if (!n) return; if (n.u) { const l = av.get(ukey(n.u)); if (l) l.splice(l.indexOf(n.u), 1); } else n.kids.forEach(use); })(bench.root);
+    return av;
+  }
+  function bParent(n, at = bench.root) { if (!at || at.u) return null; for (const k of at.kids) { if (k === n) return at; const p = bParent(n, k); if (p) return p; } return null; }
+  const bReplace = (old, nu) => { if (old === bench.root) { bench.root = nu; return; } const p = bParent(old); p.kids[p.kids.indexOf(old)] = nu; };
+  // add item k: on an empty bench it is the first card; on a card, card + item = a new card above them
+  function benchAdd(k, onto) {
+    const C = bench.C, u = (bFree().get(k) || [])[0];
+    if (!u) { bench.msg = bench.units.some(x => ukey(x) === k) ? "Wszystkie wolne kopie tego przedmiotu są już na stole." : "Tego przedmiotu nie można użyć: jest zablokowany, zarezerwowany w planie albo innej rzadkości niż cel."; return benchRender(); }
+    if (!bench.root) { bench.hist.push(null); bench.root = { u }; bench.sel = bench.root; return benchRender(); }
+    const at = onto || bench.sel || bench.root, r = C.combItem(bItem(at), fromKey(key(u)));
+    if (!r) { bench.msg = `${itemHTML(bItem(at))} i ${itemHTML(u)} się nie łączą.`; return benchRender(); }
+    bench.hist.push(bClone(bench.root));
+    const nu = { kids: [at, { u }] }; bReplace(at, nu); bench.sel = nu; benchRender();
+  }
+  function benchRender() {
+    const C = bench.C, out = $("result"), nodes = [];
+    const toTree = n => { const mid = nodes.push(n) - 1; if (n.u) { const it = fromKey(key(n.u)); return n.u.src ? { it, leaf: true, auction: true, price: n.u.price, pk: n.u.pk, mid } : { it, leaf: true, mid }; } const a = toTree(n.kids[0]), b = toTree(n.kids[1]); return { it: C.combItem(a.it, b.it), kids: [a, b], mid }; };
+    const tree = bench.root && toTree(bench.root);
+    let st = 0; if (tree) walk(tree, t => { if (t.kids) t.step = ++st; });
+    const res = tree && tree.it, hit = res && matchesLoose(C, res, bench.T);
+    const head = !tree ? `<div class="verdict miss">Pusty stół. ${narrow() ? "Wybierz przedmiot z listy poniżej i dodaj go." : "Przeciągnij przedmiot z ekwipunku albo aukcji na pole poniżej (albo wybierz go z listy)."}</div>`
+      : hit ? `<div class="verdict ok">Gotowe: ${itemHTML(res)} to twój cel (${esc(bench.desc)}). ${POL(st)}.</div>`
+      : `<div class="verdict miss">Wynik: ${itemHTML(res)}${st ? ` · ${POL(st)}` : ""}. Cel: <b>${esc(bench.desc)}</b>. ${narrow() ? "Zaznacz element i dodaj do niego kolejny przedmiot." : "Upuść kolejny przedmiot na dowolny element, żeby go z nim połączyć."}</div>`;
+    const msg = bench.msg ? `<div class="verdict bad" role="alert">${bench.msg}</div>` : ""; bench.msg = "";
+    const selId = tree ? nodes.indexOf(bench.sel) : -1;
+    const av = bFree(), list = []; for (const [k, l] of av) if (l.length) list.push(l[0]);
+    list.sort((a, b) => (a.src ? 1000 : 0) + C.score(a) - (b.src ? 1000 : 0) - C.score(b));
+    out.innerHTML = `${head}${msg}
+      <h3 class="sub-h">Stół <small class="note">${tree ? "upuść przedmiot na element, żeby go z nim połączyć · kliknij, żeby zaznaczyć" : ""}</small></h3>
+      ${tree ? treeHTML(tree, selId) : `<div class="benchdrop" id="benchDrop">Upuść tu pierwszy przedmiot</div>`}
+      <div class="mgrp mtwo"><div class="mgrp-h">${tree ? "Dodaj do zaznaczonego" : "Zacznij od"} <span class="note">${tree ? `zaznaczony: ${itemHTML(bItem(bench.sel))}` : "pierwszy przedmiot na stole"}</span></div>
+        <div class="mtwo-row"><select id="benchPick" aria-label="Przedmiot"><option value="">wybierz…</option>${list.map(u => `<option value="${esc(ukey(u))}">${esc(itemText(u))}${u.src ? " (aukcja)" : ""}${av.get(ukey(u)).length > 1 ? ` ×${av.get(ukey(u)).length}` : ""}</option>`).join("")}</select><button class="btn small" id="benchAddBtn" disabled>${tree ? "Połącz" : "Dodaj"}</button></div>
+        <div class="note" id="benchPrev"></div></div>
+      ${tree && tree.kids ? `<h3 class="sub-h">Krok po kroku <span class="progress note"></span></h3>${stepsHTML(tree, true)}` : ""}
+      <div class="row">${tree && tree.kids ? `<button class="btn primary" id="benchSave">Zapisz jako plan</button>` : ""}<button class="btn" id="benchUndo"${bench.hist.length ? "" : " disabled"}>Cofnij</button>${tree ? `<button class="btn" id="benchDel">Usuń zaznaczony</button><button class="btn ghost" id="benchClear">Wyczyść stół</button>` : ""}</div>`;
+    const dropOn = (el, n) => {
+      el.addEventListener("dragover", e => { if (![...e.dataTransfer.types].includes("application/x-bw-item")) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; el.classList.add("drop"); });
+      el.addEventListener("dragleave", () => el.classList.remove("drop"));
+      el.addEventListener("drop", e => { e.preventDefault(); el.classList.remove("drop"); const k = e.dataTransfer.getData("application/x-bw-item"); if (k) benchAdd(k, n); });
+    };
+    out.querySelectorAll(".tcard[data-mid]").forEach(c => {
+      const n = nodes[+c.dataset.mid], pick = () => { bench.sel = n; benchRender(); };
+      c.onclick = pick; c.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+      dropOn(c, n);
+    });
+    if ($("benchDrop")) dropOn($("benchDrop"), null);
+    const sel = $("benchPick"), go = $("benchAddBtn");
+    sel.onchange = () => { const k = sel.value; go.disabled = !k; const u = k && (av.get(k) || [])[0];
+      $("benchPrev").innerHTML = !u || !tree ? "" : (() => { const r = C.combItem(bItem(bench.sel), fromKey(key(u))); return r ? `Da: ${itemHTML(r)}${matchesLoose(C, r, bench.T) ? ` · <span class="ok">to twój cel</span>` : ""}` : `<span class="bad">Te dwa się nie łączą.</span>`; })(); };
+    go.onclick = () => sel.value && benchAdd(sel.value, bench.sel);
+    $("benchUndo").onclick = () => { if (!bench.hist.length) return; bench.root = bench.hist.pop(); bench.sel = bench.root; benchRender(); };
+    if ($("benchClear")) $("benchClear").onclick = () => { bench.hist.push(bClone(bench.root)); bench.root = null; bench.sel = null; benchRender(); };
+    // removing a card removes its whole branch; its combine above collapses into the other part
+    if ($("benchDel")) $("benchDel").onclick = () => {
+      bench.hist.push(bClone(bench.root));
+      const n = bench.sel || bench.root, p = bParent(n);
+      if (!p) { bench.root = null; bench.sel = null; } else { const other = p.kids.find(k => k !== n); bReplace(p, other); bench.sel = other; }
+      benchRender();
+    };
+    if (tree) { const sig = JSON.stringify(tree, (k, v) => k === "mid" ? undefined : v); if (bench.sig !== sig) { bench.sig = sig; bench.done = new Set(); } hookSteps(out, bench.done); }
+    if ($("benchSave")) $("benchSave").onclick = () => savePlan(tree, `${itemText(tree.it)} (ręczny)`, st, [...bench.done]);
+  }
   $("manHand").onclick = () => {
     const target = read($("tgtPicker"));
     slot().target = target; persist();
     const C = compile(), T = targetSets(C, target);
-    man = { C, T, desc: targetDesc(C, target), units: freeUnits().concat(freeAuction()), root: null, sel: null, hand: true };
-    man.root = slotNode(T); man.sel = man.root; manRender();
+    man = null;
+    bench = { C, T, desc: targetDesc(C, target), units: freeUnits().concat(freeAuction()), root: null, sel: null, hist: [] };
+    benchRender();
   };
   // dragging an item: the card it is dropped on decides (manDrop)
   document.addEventListener("dragstart", e => {

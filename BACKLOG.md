@@ -7,6 +7,16 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 52 (2026-11-10)
+- Ręczny plan: "Zrób ręcznie" next to "Zbuduj plan" starts an empty builder. Drag and drop
+  (computer) from Ekwipunek / Aukcja onto tree cards: a fitting item fills the card; an item that
+  can make it becomes item + missing partner (partner selected for the next drop); otherwise it is
+  placed and marked red, or refused on the target with a message. Every card's panel has
+  "Złóż z dwóch przedmiotów": two selects, live preview of the result and whether it fits, Połącz.
+  tests/manhand.js.
+- Idea: on a computer the inventory sits above the tree in Ręczny plan, so long drags scroll the
+  page; a side-by-side layout for this view would make dragging easier.
+
 ## Shipped in version 51 (2026-11-09)
 - Najszybsza takes the shortest route outright: "Nie zużywaj lepszych niż cel" no longer applies to
   it (Ustawienia says so). Only between routes with the same number of combines: cheapest items

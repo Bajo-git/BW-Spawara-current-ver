@@ -159,6 +159,13 @@ ul.inv.auc li.dear label.price input { border-color: var(--dear); color: var(--d
 .tcard.editable { cursor: pointer; }
 .tcard.editable:hover { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
 .tcard.sel { outline: 3px solid var(--accent); outline-offset: 2px; }
+/* drag and drop into the manual plan */
+.inv-name[draggable="true"] { cursor: grab; }
+body.dragging-item .tcard[data-mid] { box-shadow: 0 0 0 2px rgba(108, 193, 147, .35); }
+.tcard.drop { outline: 3px dashed var(--ok); outline-offset: 2px; }
+.mtwo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mtwo-row select { min-width: 0; flex: 1 1 200px; max-width: 340px; }
+#manTwoOut { margin-top: 6px; }
 .tcard.bad { border: 2px solid var(--dear); background: color-mix(in srgb, var(--dear) 10%, var(--surface)); }
 .tcard.bad .tlabel { color: var(--dear); font-weight: 700; }
 .medit { display: grid; gap: 10px; padding: 12px 14px; border: 2px solid var(--accent); border-radius: 10px; background: var(--sunk); }
@@ -519,8 +526,8 @@ table.sheet.k-suffix tbody th, table.sheet.k-suffix thead th:not(.corner) { colo
             </div>
           </div>
           <div class="setsum" id="findSet"></div>
-          <div class="row"><button class="btn primary" id="findBtn">Szukaj ścieżki</button><button class="btn primary" id="manBtn" hidden>Zbuduj plan</button></div>
-          <div class="note" id="manNote" hidden>Aplikacja wypełni drzewo tym, co ma sens. Potem kliknij dowolny element drzewa poniżej i wybierz, czym go zastąpić.</div>
+          <div class="row"><button class="btn primary" id="findBtn">Szukaj ścieżki</button><button class="btn primary" id="manBtn" hidden>Zbuduj plan</button><button class="btn" id="manHand" hidden>Zrób ręcznie</button></div>
+          <div class="note" id="manNote" hidden>„Zbuduj plan”: aplikacja wypełni drzewo tym, co ma sens. „Zrób ręcznie”: zaczynasz od pustego celu i sam przeciągasz przedmioty z ekwipunku na elementy drzewa albo składasz element z dwóch wybranych przedmiotów. W obu przypadkach kliknij element drzewa, żeby go zmienić.</div>
         </section>
 
         <section class="panel" id="vBest" aria-labelledby="best-h" hidden>
@@ -1654,7 +1661,7 @@ function makeEngine(DATA, store) {
     el.innerHTML = list.map((x, i) => {
       const rs = inPlan.get(i) || 0, price = x.price ?? null, dear = tooDear(x);
       const hidden = dear && store.affordOnly;
-      return `<li class="${dear ? "dear" : ""}${hidden ? " skipped" : ""}"><div class="inv-name">${itemHTML(x)}${x.n > 1 ? `<span class="pill">×${x.n}</span>` : ""}${rs ? planPill(A.aucBy, key(x)) : ""}${dear ? `<span class="pill bad">${hidden ? "pomijany" : "za drogo"}</span>` : ""}</div>
+      return `<li class="${dear ? "dear" : ""}${hidden ? " skipped" : ""}"><div class="inv-name" draggable="true" data-dk="${esc(key(x))}#a" title="Przeciągnij na element ręcznego planu">${itemHTML(x)}${x.n > 1 ? `<span class="pill">×${x.n}</span>` : ""}${rs ? planPill(A.aucBy, key(x)) : ""}${dear ? `<span class="pill bad">${hidden ? "pomijany" : "za drogo"}</span>` : ""}</div>
         <label class="price" title="${x.pk === "bid" ? `Najwyższa oferta; przebicie o 5% kosztuje ${fmt(payOf(x))} kk` : x.pk === "min" ? "Cena minimalna" : price == null ? "Brak oferty i ceny minimalnej" : "Cena wpisana ręcznie"}"><span>${x.pk === "bid" ? "oferta" : x.pk === "min" ? "min." : price == null ? "" : "cena"}</span><input data-price="${i}" inputmode="numeric" value="${price == null ? "" : fmt(price)}" placeholder="brak" aria-label="Cena">${x.pk === "bid" && price != null ? `<span class="pay">→ ${fmt(payOf(x))}</span>` : ""}</label>
         <button class="btn small" data-bought="${i}" title="Przenosi do ekwipunku i odejmuje cenę od kasy">Kupione</button>
         <button class="btn small ghost" data-lost="${i}" title="Usuwa jeden z listy">Utracone</button></li>`;
@@ -1804,7 +1811,7 @@ function makeEngine(DATA, store) {
       const lk = Math.min(x.lock || 0, x.n), rs = A.reserved.get(key(x)) || 0;
       const lockLabel = !lk ? "Zablokuj" : x.n === 1 ? "Zablokowany" : `Zablokowane ${lk}/${x.n}`;
       return `<li class="${lk === x.n ? "is-locked" : ""}">
-        <div class="inv-name">${itemHTML(x)}${rs ? planPill(A.reservedBy, key(x)) : ""}</div>
+        <div class="inv-name" draggable="true" data-dk="${esc(key(x))}" title="Przeciągnij na element ręcznego planu">${itemHTML(x)}${rs ? planPill(A.reservedBy, key(x)) : ""}</div>
         <button class="lockbtn${lk ? " on" : ""}" data-lock="${i}" aria-pressed="${lk > 0}" title="Zablokowanych przedmiotów nic nie użyje">${lockLabel}</button>
         <span class="qty"><button data-i="${i}" data-d="-1" aria-label="Jeden mniej">−</button><span>${x.n}</span><button data-i="${i}" data-d="1" aria-label="Jeden więcej">+</button></span>
         <button class="x" data-del="${i}" aria-label="Usuń">×</button></li>`;
@@ -2297,12 +2304,14 @@ onmessage = e => {
     if (!nodes.includes(man.sel)) man.sel = nodes.find(n => !n.fill) || man.root;
     const selId = nodes.indexOf(man.sel);
     const head = man.targetBelow ? `<div class="verdict bad">Czerwony element to cel albo przedmiot, który jest już wyżej w tej samej gałęzi. Nic nie może powstawać z samego siebie. Kliknij go i wybierz inaczej.</div>` : man.broken ? `<div class="verdict bad">Czerwone elementy nie pasują: wybrany przedmiot nie daje tego, czego potrzeba wyżej, więc kroki nad nim też się psują. Kliknij go i wybierz inaczej albo zmień partnera (jego „Potrzebne” pokazuje, co pasowałoby do twojego wyboru).</div>`
+      : !man.root.fill && man.hand ? `<div class="verdict miss">Ręczny plan od zera: <b>${esc(man.desc)}</b>. ${narrow() ? "Kliknij cel i złóż go z dwóch przedmiotów poniżej." : "Przeciągnij przedmiot z ekwipunku na cel albo kliknij cel i złóż go z dwóch przedmiotów poniżej."}</div>`
       : !man.root.fill ? `<div class="verdict bad">Nic z twoich przedmiotów nie daje <b>${esc(man.desc)}</b> automatycznie. Wybierz przedmioty poniżej.</div>`
       : miss ? `<div class="verdict miss">Ręczny plan: brakuje ${PRZ(miss)}${auc ? `, ${auc} z aukcji` : ""}. Kliknij element drzewa, żeby go zmienić.</div>`
       : `<div class="verdict ok">Ręczny plan gotowy: ${POL(st)}${auc ? `, ${auc} z aukcji` : ""}. Kliknij element drzewa, żeby go zmienić.</div>`;
     const editTree = treeHTML(tree, selId);
-    out.innerHTML = `${head}
-      <h3 class="sub-h">Drzewo łączenia <small class="note">kliknij element, żeby go zmienić</small></h3>
+    const msg = man.msg ? `<div class="verdict bad" role="alert">${man.msg}</div>` : ""; man.msg = "";
+    out.innerHTML = `${head}${msg}
+      <h3 class="sub-h">Drzewo łączenia <small class="note">kliknij element, żeby go zmienić${narrow() ? "" : " · przeciągnij tu przedmiot z ekwipunku"}</small></h3>
       ${editTree}
       <div class="medit" id="manEdit">${manEditor(man.sel, man.sel === man.root)}</div>
       ${shopHTML(tree)}
@@ -2311,7 +2320,20 @@ onmessage = e => {
     out.querySelectorAll(".tcard[data-mid]").forEach(c => {
       const pick = () => { man.sel = nodes[+c.dataset.mid]; manRender(); $("manEdit").scrollIntoView({ block: "nearest" }); };
       c.onclick = pick; c.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+      // drop an inventory or auction item on a card (see manDrop)
+      c.addEventListener("dragover", e => { if (![...e.dataTransfer.types].includes("application/x-bw-item")) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; c.classList.add("drop"); });
+      c.addEventListener("dragleave", () => c.classList.remove("drop"));
+      c.addEventListener("drop", e => { e.preventDefault(); c.classList.remove("drop"); const k = e.dataTransfer.getData("application/x-bw-item"); if (k) manDrop(nodes[+c.dataset.mid], k); });
     });
+    // build from two items of your choice: live preview of what they make
+    const ta = $("manTwoA"), tb = $("manTwoB");
+    if (ta && tb) {
+      const show = () => { const C = man.C, R = man.sel.req || C.WILD, a = ta.value && fromKey(ta.value.replace(/#a$/, "")), b = tb.value && fromKey(tb.value.replace(/#a$/, "")), r = a && b ? C.combItem(a, b) : null;
+        $("manTwoOut").innerHTML = !a || !b ? "Wybierz oba przedmioty." : !r ? `<span class="bad">Te dwa się nie łączą.</span>` : `Dają ${itemHTML(r)} · ${matchesLoose(C, r, R) ? `<span class="ok">pasuje</span>` : `<span class="bad">nie pasuje tutaj</span>`}`;
+        $("manTwoGo").disabled = !r; };
+      ta.onchange = tb.onchange = show; show();
+      $("manTwoGo").onclick = () => manPick(man.sel, "x:" + ta.value + "+" + tb.value, man.sel === man.root);
+    }
     out.querySelectorAll("[data-opt]").forEach(b => b.onclick = () => manPick(man.sel, b.dataset.opt, man.sel === man.root));
     const f = $("manFilter");
     const plain = el => { const c = el.cloneNode(true); c.querySelectorAll("sup").forEach(x => x.remove()); return c.textContent.toLowerCase().replace(/\s+/g, " "); };
@@ -2322,7 +2344,7 @@ onmessage = e => {
     hookSteps(out, man.done);
     if ($("manSave")) $("manSave").onclick = () => savePlan(tree, man.desc + " (ręczny)", st, [...man.done]);
     $("manAuto").onclick = async () => { const m = man, root = await manFillRoot(); if (!root || man !== m) return; man.root = root; man.sel = null; manRender(); };
-    $("manClear").onclick = () => { man.root = slotNode(man.T); man.sel = man.root; manRender(); };
+    $("manClear").onclick = () => { man.root = slotNode(man.T); man.sel = man.root; man.hand = true; manRender(); };
   }
   // the edit panel for the selected element: every way to fill it, and any of your free items
   function manEditor(n, isRoot) { return withBanned(n, () => manEditorIn(n, isRoot)); }
@@ -2349,12 +2371,44 @@ onmessage = e => {
       <div class="row">${isRoot ? "" : btn("miss", "Zostaw jako brakujący", "act")}${btn("auto", "Wypełnij automatycznie", "act")}</div>
       <div class="mlegend"><span class="mopt c-own">twoje</span><span class="mopt c-own-half">twój + brakujący</span><span class="mopt c-auc">aukcja</span><span class="mopt c-auc-half">aukcja + brakujący</span><span class="mopt c-mix">twój + aukcja</span><span class="mopt c-copy">kolejna kopia (brakuje)</span><span class="mopt">oba brakujące</span></div>
       <input class="mfilter" id="manFilter" placeholder="Filtruj po nazwie…" aria-label="Filtruj opcje">
+      ${twoPicker(av)}
       ${grp("Pasuje od razu", "twój przedmiot spełnia wymaganie", W.direct.map(u => btn("d:" + ukey(u), uText(u), one(u))))}
       ${grp("Dwa twoje przedmioty", "razem dają ten element", W.pairs.slice(0, 60).map(([a, b]) => btn("p:" + ukey(a) + "+" + ukey(b), `${uText(a)} <span class="plus">+</span> ${uText(b)}`, two(a, b))))}
       ${grp("Twój przedmiot + brakujący", "brakujący zostanie dobrany dalej", W.halves.slice(0, 60).map(h => btn("h:" + ukey(h.a), `${uText(h.a)} <span class="plus">+</span> <span class="note">${looseHTML(C, h.S)}</span>`, one(h.a) + "-half")))}
       ${grp("Dwa brakujące", "najniższe poziomy, które to dają", twoMissingOK(C, R, isRoot).slice(0, 20).map((t, j) => btn("t:" + j, `${itemHTML(lowOf(C, t.X))} <span class="plus">+</span> ${itemHTML(lowOf(C, t.Y))}`)))}
       ${isRoot ? "" : grp("Kolejna kopia (do zdobycia)", "masz ten przedmiot, ale wszystkie kopie są już użyte; ta będzie brakująca", copies.map(u => btn("c:" + key(u), itemHTML(u), "c-copy")))}
       ${isRoot ? "" : grp("Inne twoje przedmioty", "nie spełniają wymagania; wybór na własną rękę", others.map(u => btn("d:" + ukey(u), uText(u), "nofit")))}`;
+  }
+  // "Złóż z dwóch przedmiotów": any two free items (two copies of one item when you have two)
+  function twoPicker(av) {
+    const list = []; for (const [k, l] of av) if (l.length && !isTarget(l[0])) list.push(l[0]);
+    list.sort((a, b) => unitRank(a) - unitRank(b));
+    const opt = u => `<option value="${esc(ukey(u))}">${esc(itemText(u))}${u.src ? " (aukcja)" : ""}${(av.get(ukey(u)) || []).length > 1 ? ` ×${av.get(ukey(u)).length}` : ""}</option>`;
+    if (list.length < 1) return "";
+    const sel = id => `<select id="${id}" aria-label="${id === "manTwoA" ? "Pierwszy przedmiot" : "Drugi przedmiot"}"><option value="">wybierz…</option>${list.map(opt).join("")}</select>`;
+    return `<div class="mgrp mtwo"><div class="mgrp-h">Złóż z dwóch przedmiotów <span class="note">dowolne dwa twoje przedmioty; wynik widać od razu</span></div>
+      <div class="mtwo-row">${sel("manTwoA")}<span class="plus">+</span>${sel("manTwoB")}<button class="btn small" id="manTwoGo" disabled>Połącz</button></div><div class="note" id="manTwoOut"></div></div>`;
+  }
+  // an item dropped on a card: it fills the card if it fits; otherwise, if it can make the card with
+  // some partner, the card becomes "this item + a missing partner" (drop the next item on the partner);
+  // otherwise it is placed anyway and marked "nie pasuje", like picking it from the list
+  function manDrop(n, k) {
+    if (!man) return;
+    const isRoot = n === man.root, C = man.C;
+    withBanned(n, () => {
+      const av = manAvail(n), u = (av.get(k) || [])[0], R = n.req || C.WILD;
+      if (!u) { const known = man.units.some(x => ukey(x) === k); man.msg = known ? "Wszystkie wolne kopie tego przedmiotu są już użyte w tym planie." : "Tego przedmiotu nie można użyć: jest zablokowany, zarezerwowany w planie albo innej rzadkości niż cel."; return; }
+      if (isTarget(u)) { man.msg = "To jest cel albo przedmiot, który jest już wyżej w tej gałęzi; nic nie może powstawać z samego siebie."; return; }
+      n.forced = false;
+      if (!isRoot && matchesLoose(C, u, R)) { n.fill = { kind: "item", u }; man.sel = n; return; }
+      const S0 = preimage(C, u, R), S = S0 && (capS(S0) || S0);
+      if (S && (isRoot || !isTarget(C.combItem(u, lowOf(C, S))))) {
+        const partner = slotNode(S); n.fill = { kind: "split", kids: [itemNode(u), partner] }; man.sel = partner; return;
+      }
+      if (isRoot) { man.msg = `${itemHTML(u)} nie daje celu z żadnym partnerem. Przeciągnij inny przedmiot.`; return; }
+      n.fill = { kind: "item", u }; n.forced = true; man.sel = n;
+    });
+    manRender();
   }
   function manPick(n, v, isRoot) { withBanned(n, () => manPickIn(n, v, isRoot)); manRender(); }
   function manPickIn(n, v, isRoot) {
@@ -2376,6 +2430,11 @@ onmessage = e => {
     }
     else if (v.startsWith("c:")) { n.fill = null; n.pref = fromKey(v.slice(2)); }
     else if (v.startsWith("d:")) { const u = find(v.slice(2)); n.fill = { kind: "item", u }; n.forced = !matchesLoose(man.C, u, R); }
+    else if (v.startsWith("x:")) {
+      const [ka, kb] = v.slice(2).split("+"), a = find(ka); if (!a) return; takeU(av, a); const b = (av.get(kb) || [])[0];
+      if (!b) { man.msg = "Masz tylko jedną wolną kopię tego przedmiotu."; return; }
+      n.fill = { kind: "split", kids: [itemNode(a), { req: null, fill: { kind: "item", u: b } }] };
+    }
     else if (v.startsWith("p:")) {
       const [ka, kb] = v.slice(2).split("+"), a = find(ka); takeU(av, a); const b = (av.get(kb) || [])[0];
       n.fill = { kind: "split", kids: [itemNode(a), { req: null, fill: { kind: "item", u: b } }] };
@@ -2407,6 +2466,21 @@ onmessage = e => {
     if (!root || man !== m) return;
     man.root = root; manRender();
   };
+  // "Zrób ręcznie": the same builder, starting empty; you fill it by dragging items or picking pairs
+  $("manHand").onclick = () => {
+    const target = read($("tgtPicker"));
+    slot().target = target; persist();
+    const C = compile(), T = targetSets(C, target);
+    man = { C, T, desc: targetDesc(C, target), units: freeUnits().concat(freeAuction()), root: null, sel: null, hand: true };
+    man.root = slotNode(T); man.sel = man.root; manRender();
+  };
+  // dragging an item: the card it is dropped on decides (manDrop)
+  document.addEventListener("dragstart", e => {
+    const el = e.target.closest && e.target.closest("[data-dk]"); if (!el) return;
+    e.dataTransfer.setData("application/x-bw-item", el.dataset.dk); e.dataTransfer.setData("text/plain", el.textContent.trim()); e.dataTransfer.effectAllowed = "copy";
+    document.body.classList.add("dragging-item");
+  });
+  document.addEventListener("dragend", () => document.body.classList.remove("dragging-item"));
   // the plan's first fill (the whole tree) searches in the background; same as manAuto at the top
   async function manFillRoot() {
     const av = manAvail(null), units = [].concat(...av.values()).filter(u => !isTarget(u));
@@ -2811,7 +2885,7 @@ onmessage = e => {
     document.querySelectorAll(".navlist [data-view]").forEach(b => { b.classList.toggle("on", b.dataset.view === v); b.setAttribute("aria-current", b.dataset.view === v ? "page" : "false"); });
     const isMan = v === "manual";
     $("tgtTitle").textContent = isMan ? "Ręczny plan" : "Szukanie ścieżki";
-    $("findBtn").hidden = isMan; $("manBtn").hidden = !isMan; $("manNote").hidden = !isMan;
+    $("findBtn").hidden = isMan; $("manBtn").hidden = !isMan; $("manHand").hidden = !isMan; $("manNote").hidden = !isMan;
     if (!keepResult) $("result").innerHTML = "";
     document.body.dataset.m = "view"; paintM();
   }

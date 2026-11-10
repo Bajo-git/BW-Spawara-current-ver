@@ -159,6 +159,13 @@ ul.inv.auc li.dear label.price input { border-color: var(--dear); color: var(--d
 .tcard.editable { cursor: pointer; }
 .tcard.editable:hover { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
 .tcard.sel { outline: 3px solid var(--accent); outline-offset: 2px; }
+/* drag and drop into the manual plan */
+.inv-name[draggable="true"] { cursor: grab; }
+body.dragging-item .tcard[data-mid] { box-shadow: 0 0 0 2px rgba(108, 193, 147, .35); }
+.tcard.drop { outline: 3px dashed var(--ok); outline-offset: 2px; }
+.mtwo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mtwo-row select { min-width: 0; flex: 1 1 200px; max-width: 340px; }
+#manTwoOut { margin-top: 6px; }
 .tcard.bad { border: 2px solid var(--dear); background: color-mix(in srgb, var(--dear) 10%, var(--surface)); }
 .tcard.bad .tlabel { color: var(--dear); font-weight: 700; }
 .medit { display: grid; gap: 10px; padding: 12px 14px; border: 2px solid var(--accent); border-radius: 10px; background: var(--sunk); }
@@ -519,8 +526,8 @@ table.sheet.k-suffix tbody th, table.sheet.k-suffix thead th:not(.corner) { colo
             </div>
           </div>
           <div class="setsum" id="findSet"></div>
-          <div class="row"><button class="btn primary" id="findBtn">Szukaj ścieżki</button><button class="btn primary" id="manBtn" hidden>Zbuduj plan</button></div>
-          <div class="note" id="manNote" hidden>Aplikacja wypełni drzewo tym, co ma sens. Potem kliknij dowolny element drzewa poniżej i wybierz, czym go zastąpić.</div>
+          <div class="row"><button class="btn primary" id="findBtn">Szukaj ścieżki</button><button class="btn primary" id="manBtn" hidden>Zbuduj plan</button><button class="btn" id="manHand" hidden>Zrób ręcznie</button></div>
+          <div class="note" id="manNote" hidden>„Zbuduj plan”: aplikacja wypełni drzewo tym, co ma sens. „Zrób ręcznie”: zaczynasz od pustego celu i sam przeciągasz przedmioty z ekwipunku na elementy drzewa albo składasz element z dwóch wybranych przedmiotów. W obu przypadkach kliknij element drzewa, żeby go zmienić.</div>
         </section>
 
         <section class="panel" id="vBest" aria-labelledby="best-h" hidden>

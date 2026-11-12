@@ -1172,8 +1172,11 @@ function makeEngine(DATA, store) {
   const overOf = (C, T, it) => { const x = C.psOf(it); return aboveTier(T.p, x.p) || aboveTier(T.s, x.s); };
   // the values a missing item may take: nothing above the target's prefix or suffix tier
   // an item that already matches or beats the target in every named affix (and is not missing one)
+  // A better version of the target itself: a base the target allows, its rarity, and every named
+  // affix at least as high. (Comparing affixes alone also caught other bases, e.g. a higher-prefix
+  // miecz dwuręczny for "kąsająca kosa, dowolny sufiks", and Optymalna then missed complete routes.)
   const atLeastTarget = (C, T, it) => { const x = C.psOf(it), fixed = [[T.p, x.p], [T.s, x.s]].filter(([t]) => isOne(t) && t !== 1);
-    return fixed.length > 0 && fixed.every(([t, v]) => topBit(v) >= topBit(t)); };
+    return (x.b & T.b) && (x.l & T.l) && fixed.length > 0 && fixed.every(([t, v]) => topBit(v) >= topBit(t)); };
   // your own items in a route whose prefix or suffix is above the target's
   const usesOver = (C, T, tree) => { let n = 0; walk(tree, t => { if (t.leaf && !t.wild && !t.auction && overOf(C, T, t.it)) n++; }); return n; };
   const capWild = (C, T) => {
@@ -1228,6 +1231,10 @@ function makeEngine(DATA, store) {
       // better version of what you are making
       const G = findRoutesIn(C, T, units.filter(u => !atLeastTarget(C, T, u)), mode, deep, avoid);
       if (G.routes.length && G.routes[0].missing < r.missing) return G.routes[0].missing === 0 ? { ...G, alt: F } : { ...F, alt: G };
+      // still missing: a complete route that consumes an item already as good as the target is
+      // offered (never chosen), so it is not a silent difference from Najszybsza
+      const H = findRoutesIn(C, T, units, mode, deep, avoid);
+      if (H.routes.length && H.routes[0].missing === 0) return { ...F, alt: H, altAtLeast: true };
     }
     return F;
   }
@@ -1977,7 +1984,7 @@ onmessage = e => {
   Object.assign(settings, m.settings);
   eng.onPhase = text => postMessage({ id: m.id, phase: text });
   try {
-    const slim = F => F && { R: { engine: F.R.engine, total: F.R.total, n: F.R.n, g: F.R.g, trimmed: F.R.trimmed, partial: F.R.partial, depth: F.R.depth, T: F.R.T }, routes: F.routes, ladder: F.ladder, higher: F.higher, alt: slim(F.alt) };
+    const slim = F => F && { R: { engine: F.R.engine, total: F.R.total, n: F.R.n, g: F.R.g, trimmed: F.R.trimmed, partial: F.R.partial, depth: F.R.depth, T: F.R.T }, routes: F.routes, ladder: F.ladder, higher: F.higher, alt: slim(F.alt), altAtLeast: F.altAtLeast };
     postMessage({ id: m.id, F: slim(eng.findRoutes(eng.compile(m.ci), m.T, m.units, m.mode, m.deep, m.force ? { force: m.force } : null)) });
   } catch (err) { postMessage({ id: m.id, error: String(err && err.stack || err) }); }
 };`;
@@ -2104,7 +2111,7 @@ onmessage = e => {
       if (!F.alt) return "";
       const o = other(), oR = o.routes[0], mine = betterIn(cur);
       if (!mine.length) { const used = betterIn(o);
-          return `<div class="altbox"><div><b>Jest ścieżka z ${oR.missing ? missTxt(oR.missing) : "wszystkim pod ręką"}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">Ustawienie „Nie zużywaj lepszych niż cel” sięga po nie tylko wtedy, gdy dają pełną ścieżkę, więc pokazana jest ścieżka bez nich.</div>` : ""}<button class="btn small" id="altSwap">Pokaż ścieżkę z nimi</button></div>`; }
+          return `<div class="altbox"><div><b>Jest ścieżka z ${oR.missing ? missTxt(oR.missing) : "wszystkim pod ręką"}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">${F.altAtLeast ? "Taki przedmiot jest już co najmniej tak dobry jak cel, więc ustawienie „Nie zużywaj lepszych niż cel” nigdy go sam nie zużywa. Najszybsza go użyje." : "Ustawienie „Nie zużywaj lepszych niż cel” sięga po nie tylko wtedy, gdy dają pełną ścieżkę, więc pokazana jest ścieżka bez nich."}</div>` : ""}<button class="btn small" id="altSwap">Pokaż ścieżkę z nimi</button></div>`; }
       return `<div class="altbox"><div><b>Ta ścieżka zużywa przedmioty lepsze niż wynik:</b> ${mine.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">Bez nich jest tylko ścieżka z ${missTxt(oR.missing)}, więc pokazana jest ta pełna (ustawienie: lepsze niż cel tylko w ostateczności).</div>` : ""}<button class="btn small" id="altSwap">${cur === F ? "Pokaż ścieżkę bez nich" : "Wróć do ścieżki bez nich"}</button></div>`;
     };
     const modeName = { fast: "najszybsza", cheap: "najtańsza", optimal: "optymalna" }[mode];

@@ -7,6 +7,17 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 54 (2026-11-12)
+- Fix: Optymalna missed complete routes that Najszybsza found (user report). Random search:
+  23 of 146 such cases, all from "Nie zużywaj lepszych niż cel". Its second pass never uses an item
+  "at least as good as the target", and that check compared prefix and suffix only, ignoring the
+  base and rarity, so a higher-prefix miecz dwuręczny counted as "a better kąsająca kosa". Now the
+  item must also have a base the target allows and the target's rarity: 13 of the 23 now get the
+  complete route. The other 10 consume a real better version of the target (e.g. kompozytowa
+  spódnica tropiciela for kompozytowa spódnica handlarza bronią); Optymalna now offers that complete
+  route in the box above the result (never chosen) and says Najszybsza will use it.
+- Engine limits (exact search 12 items for Najszybsza vs 10 for Optymalna) caused none of them.
+
 ## Shipped in version 53 (2026-11-10)
 - "Zrób ręcznie" reworked into a bottom-up workbench (user feedback: no target card at the start).
   Empty bench; first dropped item becomes a card; an item dropped on any card combines with it and

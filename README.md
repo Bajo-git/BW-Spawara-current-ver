@@ -77,6 +77,7 @@ Run from the repo root; page paths are relative.
 | `node tests/filtcheck.js index.html` | Manual-plan filter matches names across tier numbers |
 | `node tests/cssdiff.js PAGE outdir` | Screenshots of 12 screens, to compare two builds pixel by pixel |
 | `node tests/bench.js OLD.html NEW.html` | Search and highest-craft timings, old vs new |
+| `node tests/optfast.js index.html 300 999` | Random inventories: wherever Najszybsza has a complete route, Optymalna must show one or offer it in the box (expect `NOT full and not offered in 0`) |
 | `node tests/fastbench.js OLD.html NEW.html 80` | Najszybsza against the proven shortest route on random 14-item inventories (`SIZE=24` for bigger ones, compared with each other) |
 | `node --max-old-space-size=6000 tests/depthbench.js OLD.html NEW.html 40 fast` | Fewest missing items found by two builds on 40 random 20-item inventories (runs the engine directly) |
 

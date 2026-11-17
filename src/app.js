@@ -579,7 +579,20 @@ function makeEngine(DATA, store) {
       const banned = new Set(avoid && avoid.keys || []);
       const pool = avoid ? units.filter(u => !(avoid.set && matchesLoose(C, u, avoid.set)) && !banned.has(key(u))) : units;
       const depth = Math.max(1, Math.min(8, +store.depth || 5));
-      let F = topDown(C, T, pool, depth);
+      // The search counts copies only after it has built the tree, so a deeper tree that reuses one of
+      // your items in many places can end up with more missing items than a shallower one. Every
+      // depth up to the setting is tried and the best real result kept: a higher depth never does worse.
+      // Najtańsza's own order, on the real result: fewest missing, fewest auction, lowest tiers of the
+      // missing items, lowest tiers of your items, fewest steps
+      const rank = r => { let mt = 0, ot = 0; walk(r.tree, n => { if (n.kids) return; const t = C.idxP(n.it) + C.idxS(n.it); if (n.wild) mt += t; else if (!n.auction) ot += t; }); return [r.missing, r.auction, mt, ot, r.steps]; };
+      const better = (a, b) => { const x = rank(a), y = rank(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
+      let F = null;
+      for (let d = 1; d <= depth; d++) {
+        const G = topDown(C, T, pool, d);
+        if (!G.routes.length || redundant(C, G.routes[0].tree, T, avoid)) { if (!F) F = { ...G, routes: [] }; continue; }
+        if (!F || !F.routes.length || better(G.routes[0], F.routes[0]) < 0) F = G;
+      }
+      F = { ...F, R: { ...F.R, depth } };
       // manual plan: when nothing of yours is used, the missing items are looked into `force` levels deep
       const mine = F => F.routes.length && F.routes[0].L > F.routes[0].missing;
       if (avoid && avoid.force && !mine(F)) {

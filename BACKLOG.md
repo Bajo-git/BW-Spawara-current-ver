@@ -7,6 +7,20 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 55 (2026-11-17)
+- Najtańsza: a deeper setting could give a worse answer (elfia kolczuga kaliguli with the user's
+  chests: 3 missing at depth 3-5, 12 at 6-8; depth 3 also worse than 1), because copies are counted
+  only after the tree is built and deeper trees reuse one owned item in many places. Every depth up
+  to the setting is now tried and the best real result kept (missing, auction, missing tiers, own
+  tiers, steps): never worse than a shallower depth; that case gives 2 at every depth. Regression:
+  two results improved (2 -> 1 and 3 -> 2 missing), nothing worse.
+- Analysed (user report): with tygrysia zbroja warstwowa siewcy śmierci locked, elfia kolczuga
+  kaliguli has no complete route within the search's reach; Przeróbka złomu with a direction
+  setting builds one: 13-14 needed upgrade steps + 8-9 combines = 22 combines from 23 items.
+  Proposal: "przeróbka" as a generator of stepping stones when a search ends with missing items
+  (variants: default, w stronę prefiksu / sufiksu, tylko duże, Najlepszy możliwy), keep only the
+  steps the route needs. Not started.
+
 ## Shipped in version 54 (2026-11-12)
 - Fix: Optymalna missed complete routes that Najszybsza found (user report). Random search:
   23 of 146 such cases, all from "Nie zużywaj lepszych niż cel". Its second pass never uses an item

@@ -12,7 +12,7 @@ const file = process.argv[2], outFile = process.argv[3];
   const lines = [];
   const clean = s => s.replace(/\s+/g, ' ').replace(/\(?[0-9]+ ms\)?/g, '').replace(/· +·/g, '·').trim();
   const setup = async (D) => { await pg.evaluate(D => localStorage.setItem('bw-forge-v2', JSON.stringify(D)), D); await pg.reload(); await pg.addStyleTag({ content: 'sup.tier{display:none!important} ul.inv li{content-visibility:visible!important}' }); };
-  const wait = () => pg.waitForFunction(() => { const x = document.querySelector('#result').innerText; return x && !/^Szukam/.test(x); }, null, { timeout: 120000 });
+  const wait = () => pg.waitForFunction(() => { const x = document.querySelector('#result').innerText; return x && !/^Szukam/.test(x) && !document.querySelector('#result .searching'); }, null, { timeout: 120000 });
   const txt = async sel => { await pg.evaluate(() => document.querySelectorAll('sup.tier').forEach(x => x.remove())); return clean(await pg.locator(sel).first().innerText()); };
   const res = async () => txt('#result');
   const mkInv = (raw, legAll) => raw.split('\n').map(l => { const leg = legAll || l.startsWith('Legendary'); const w = l.replace('Legendary', '').split(' '); return { p: w[0], b: w[1], s: w.slice(2).join(' '), l: leg, n: 1, lock: 0 }; });

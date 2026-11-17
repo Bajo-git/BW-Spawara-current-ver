@@ -7,6 +7,19 @@
 - Top-down exhaustive search (research/2026-11-top-down): an extra mode for deep ladders, or lifting
   Najtańsza's depth cap with a time limit; it must stop at an unbeatable plan (0 missing).
 
+## Shipped in version 56 (2026-11-17)
+- Routes through intermediate items (Ustawienia: "Szukaj przez przedmioty pośrednie", on by default).
+  When a search ends with missing items, the progress bar says so ("Nie ma prostej ścieżki (brakuje
+  N). Szukam alternatywnej przez przedmioty pośrednie…" + which variant, k/5) and the app builds
+  stepping stones five ways: Przeróbka złomu as is, w stronę prefiksu, w stronę sufiksu, tylko duże,
+  and Najlepszy możliwy (each on a copy; locks and plans respected). It searches each (Najszybsza; in
+  Najtańsza its own rule), expands every route found back into the steps that made its products,
+  checks every combine and copy, and keeps the one with the fewest missing, then fewest combines.
+  Shown only if it needs fewer missing items than the direct route; a box switches between the two.
+  User's armoury (siewcy śmierci locked): elfia kolczuga kaliguli, direct 1 missing -> 26 combines
+  from 27 own items. tests/stones.js (+ fixtures/zbrojownia-kaliguli.txt). Regression identical;
+  the harness now waits for the search box to close.
+
 ## Shipped in version 55 (2026-11-17)
 - Najtańsza: a deeper setting could give a worse answer (elfia kolczuga kaliguli with the user's
   chests: 3 missing at depth 3-5, 12 at 6-8; depth 3 also worse than 1), because copies are counted
@@ -17,9 +30,7 @@
 - Analysed (user report): with tygrysia zbroja warstwowa siewcy śmierci locked, elfia kolczuga
   kaliguli has no complete route within the search's reach; Przeróbka złomu with a direction
   setting builds one: 13-14 needed upgrade steps + 8-9 combines = 22 combines from 23 items.
-  Proposal: "przeróbka" as a generator of stepping stones when a search ends with missing items
-  (variants: default, w stronę prefiksu / sufiksu, tylko duże, Najlepszy możliwy), keep only the
-  steps the route needs. Not started.
+  Shipped in v56 as routes through intermediate items.
 
 ## Shipped in version 54 (2026-11-12)
 - Fix: Optymalna missed complete routes that Najszybsza found (user report). Random search:

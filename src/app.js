@@ -1439,7 +1439,9 @@ onmessage = e => {
     }, 100);
     if (narrow()) $("result").scrollIntoView({ block: "start", behavior: "smooth" });
     $("srchCancel").onclick = () => { cancelSearch(); clearInterval(tick); $("result").innerHTML = `<div class="verdict">Szukanie anulowane.</div>`; };
-    return { phase: t => { const el = $("srchPhase"); if (el) el.textContent = t; }, done: () => clearInterval(tick) };
+    return { phase: t => { const el = $("srchPhase"); if (el) el.textContent = t; },
+      title: h => { const el = $("result").querySelector(".srch-row b"); if (el) el.innerHTML = h; },
+      done: () => clearInterval(tick) };
   }
   $("findBtn").onclick = () => runFind(!!store.deep);
   // "Dlaczego nie?": each item of this category the shown route doesn't use, and what kept it out
@@ -1480,6 +1482,79 @@ onmessage = e => {
     const cut = R && R.total > R.n ? `<div class="note">Masz ${R.total} przydatnych przedmiotów, a szukanie wzięło ${R.n} najbardziej obiecujących; część z „pasuje do reguł” mogła więc nie być sprawdzona.</div>` : "";
     return `<details class="whynot"><summary>Dlaczego nie? <span class="note">${PRZ(n)} bez użycia w tej ścieżce</span></summary>${cut}<ul>${list.map(r => `<li>${itemHTML(r.it)}${r.n > 1 ? `<span class="pill">×${r.n}</span>` : ""}<span class="why">${esc(r.why)}</span></li>`).join("")}</ul></details>`;
   }
+  // ---- stepping stones: when the search ends with missing items ----
+  // Builders that don't aim at the target (Przeróbka złomu in four settings, Najlepszy możliwy) make
+  // intermediate items the route search never builds. Each variant: your items with its products in
+  // place of what they used. A route found there is expanded back (every product replaced by the
+  // steps that made it), so the result is an ordinary tree from your own items.
+  function stoneVariants(C, units) {
+    const out = [], push0 = out.push.bind(out); out.push = v => push0({ ...v, all: units });
+    const leafOf = u => u.src ? { it: u, leaf: true, auction: true, price: u.price, pk: u.pk } : { it: u, leaf: true };
+    const fromTrash = (label, opt) => {
+      const steps = trashPlan(C, units, "both", false, opt); if (!steps.length) return;
+      const byId = new Map(), usedIds = new Set();
+      steps.forEach(st => { byId.set(st.r.id, st); usedIds.add(st.a.id); usedIds.add(st.b.id); });
+      const recipe = n => { const st = n.from ? byId.get(n.id) : null; return st ? { it: n.it, kids: [recipe(st.a), recipe(st.b)] } : leafOf(n.it); };
+      const consumed = new Set(); steps.forEach(st => [st.a, st.b].forEach(x => { if (!x.from) consumed.add(x.it); }));
+      const products = steps.filter(st => !usedIds.has(st.r.id)).map(st => ({ it: st.r.it, tree: recipe(st.r) }));
+      out.push({ label, products, rest: units.filter(u => !consumed.has(u)) });
+    };
+    fromTrash("przeróbka złomu", {});
+    if (C.hasP && C.hasS) { fromTrash("przeróbka w stronę prefiksu", { dir: "p" }); fromTrash("przeróbka w stronę sufiksu", { dir: "s" }); fromTrash("przeróbka: tylko duże ulepszenia", { big: true }); }
+    // Najlepszy możliwy: the best item it can craft, per rarity
+    const taken = new Map(), products = [];
+    for (const g of bestCraft(C, units, "both", false)) {
+      if (!g.best) continue;
+      const conv = n => n.kids ? { it: n.it, kids: n.kids.map(conv) } : (taken.set(ukey(n.it), (taken.get(ukey(n.it)) || 0) + 1), leafOf(n.it));
+      products.push({ it: g.best.it, tree: conv(g.best) });
+    }
+    if (products.length) { const left = new Map(taken); out.push({ label: "najlepszy możliwy", products, rest: units.filter(u => { const k = ukey(u), c = left.get(k) || 0; if (c) { left.set(k, c - 1); return false; } return true; }) }); }
+    // the same products twice are searched once
+    const seen = new Set(); return out.filter(v => { const sig = v.products.map(p => key(p.it)).sort().join(";"); if (seen.has(sig)) return false; seen.add(sig); return true; });
+  }
+  // a route found on a variant's items, with each product put back as the steps that made it
+  function expandStones(C, T, r, v) {
+    const own = new Map(); for (const u of v.rest) if (!u.src) own.set(key(u), (own.get(key(u)) || 0) + 1);
+    const prods = new Map(); for (const p of v.products) { const k = key(p.it); if (!prods.has(k)) prods.set(k, []); prods.get(k).push(p); }
+    let fromStones = 0;
+    const copy = t => {
+      if (t.kids) return { it: t.it, kids: t.kids.map(copy) };
+      if (t.leaf && !t.wild && !t.auction) { const k = key(t.it), o = own.get(k) || 0;
+        if (o) own.set(k, o - 1); else { const l = prods.get(k); if (l && l.length) { fromStones++; return JSON.parse(JSON.stringify(l.shift().tree)); } } }
+      return { ...t };
+    };
+    const tree = copy(r.tree);
+    // safety: every combine makes what the card says, and no item is used more often than you have it
+    let ok = true; const have = new Map(); for (const u of v.all) have.set(ukey(u), (have.get(ukey(u)) || 0) + 1);
+    walk(tree, t => { if (t.kids) { const m = C.combItem(t.kids[0].it, t.kids[1].it); if (!m || key(m) !== key(t.it)) ok = false; }
+      else if (!t.wild) { const k = ukey(t.it.src || !t.auction ? t.it : { ...t.it, src: "auction" }), c = have.get(k) || 0; if (c <= 0) ok = false; else have.set(k, c - 1); } });
+    if (!ok) return null;
+    let step = 0, L = 0, missing = 0, auction = 0, cost = 0, over = 0;
+    const num = t => { if (t.kids) { t.kids.forEach(num); t.step = ++step; } else { L++; cost += C.score(t.it); if (t.wild) missing++; else if (t.auction) auction++; else if (overOf(C, T, t.it)) over++; } };
+    num(tree);
+    return { ...r, tree, steps: step, L, missing, auction, cost, over, used: L - missing - auction, fromStones };
+  }
+  async function stoneSearch(C, T, base, units, box, mode) {
+    const before = base ? base.missing : Infinity;
+    const vars = stoneVariants(C, units); let best = null;
+    for (let i = 0; i < vars.length; i++) {
+      const v = vars[i];
+      box.title(`Nie ma prostej ścieżki${base ? ` (brakuje ${base.missing})` : ""}. Szukam alternatywnej przez przedmioty pośrednie…`);
+      box.phase(`${v.label} (${i + 1}/${vars.length})`);
+      const units2 = v.rest.concat(v.products.map(p => ({ p: p.it.p, b: p.it.b, s: p.it.s, l: p.it.l })));
+      // Najtańsza keeps its own rule (only lower tiers below each item); the others use Najszybsza here,
+      // which also puts the fewest missing items first and is quick
+      const G = await searchAsync(T, units2, mode === "cheap" ? "cheap" : "fast", false, null);
+      if (!G) return null; // cancelled
+      // a route that leans on big products looks short here and grows when expanded: expand them all
+      for (const r of G.routes) {
+        const x = expandStones(C, T, r, v);
+        if (!x || !x.fromStones || x.missing >= before) continue;
+        if (!best || x.missing < best.r.missing || (x.missing === best.r.missing && (x.steps < best.r.steps || (x.steps === best.r.steps && x.cost < best.r.cost)))) best = { r: x, label: v.label, R: G.R };
+      }
+    }
+    return best;
+  }
   async function runFind(deep) {
     const target = read($("tgtPicker"));
     slot().target = target; persist();
@@ -1491,10 +1566,16 @@ onmessage = e => {
     const desc = targetDesc(C, target);
     const t0 = performance.now(), box = searchBox(deep);
     const F = await searchAsync(T, units, mode, deep, box.phase);
+    if (!F) { box.done(); return; } // cancelled
+    // no route without missing items: try routes through intermediate items (Ustawienia can turn it off)
+    let via = null;
+    if (store.stones !== false && (!F.routes.length || F.routes[0].missing > 0)) {
+      via = await stoneSearch(C, T, F.routes[0], units, box, mode);
+      if (via) via.F = { R: { ...via.R, via: via.label }, routes: [via.r], ladder: null, higher: null };
+    }
     box.done();
-    if (!F) return; // cancelled
     const R = F.R;
-    if (!F.routes.length) {
+    if (!F.routes.length && !via) {
       out.innerHTML = `<div class="verdict bad">Brak ścieżki do <b>${esc(desc)}</b> z twoich wolnych przedmiotów, nawet z 4 brakującymi.</div>${trimNote(R)}${R.partial ? partialNote : ""}${deepBtn(R, deep)}${whyNotHTML(C, T, R, null, mode)}`;
       hookDeep(runFind);
       return;
@@ -1503,22 +1584,31 @@ onmessage = e => {
     // one is the result only when it is complete and the other has missing items (see findRoutes).
     let cur, routes, pick = 0;
     const load = X => { cur = X; pick = 0; routes = X.routes.map(r => { const tree = serTree(C, r.tree); assignPrices(tree, units); return { ...r, tree }; }); };
-    load(F);
+    load(via ? via.F : F);
     const ms = Math.round(performance.now() - t0);
     // the better-than-the-result items a route uses (its open prefix/suffix fixed to what it makes)
     const betterIn = Fx => { const r = Fx.routes[0], res = C.psOf(r.tree.it), Tr = { ...T, p: isOne(T.p) ? T.p : res.p, s: isOne(T.s) ? T.s : res.s }, l = []; walk(r.tree, t => { if (t.leaf && !t.wild && !t.auction && overOf(C, Tr, t.it)) l.push(t.it); }); return l; };
     const other = () => cur === F ? F.alt : F;
     const missTxt = n => `${n} ${pl(n, "brakującym", "brakującymi", "brakującymi")}`;
+    const viaHTML = () => {
+      if (!via) return "";
+      const v = via.r, plain = F.routes[0], used = `${POL(v.steps)} z ${v.used === 1 ? "1 twojego przedmiotu" : `${v.used} twoich przedmiotów`}`;
+      const plainTxt = plain ? (plain.missing ? `najlepsza prosta ścieżka: brakuje ${plain.missing}` : "") : "prostej ścieżki nie ma nawet z brakującymi";
+      return cur === via.F
+        ? `<div class="altbox via"><div><b>Prostej ścieżki nie ma</b> (${plainTxt}). Ta ścieżka najpierw robi przedmioty pośrednie (${esc(via.label)}): ${used}${v.missing ? `, brakuje ${v.missing}` : ""}.</div>${plain ? `<button class="btn small" id="viaSwap">Pokaż prostą ścieżkę</button>` : ""}</div>`
+        : `<div class="altbox via"><div><b>Jest ścieżka przez przedmioty pośrednie</b> (${esc(via.label)}): ${used}${v.missing ? `, brakuje ${v.missing}` : ", wszystko pod ręką"}.</div><button class="btn small" id="viaSwap">Pokaż ją</button></div>`;
+    };
     const altHTML = () => {
-      if (!F.alt) return "";
+      if (via && cur === via.F) return viaHTML();
+      if (!F.alt) return viaHTML();
       const o = other(), oR = o.routes[0], mine = betterIn(cur);
       if (!mine.length) { const used = betterIn(o);
-          return `<div class="altbox"><div><b>Jest ścieżka z ${oR.missing ? missTxt(oR.missing) : "wszystkim pod ręką"}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">${F.altAtLeast ? "Taki przedmiot jest już co najmniej tak dobry jak cel, więc ustawienie „Nie zużywaj lepszych niż cel” nigdy go sam nie zużywa. Najszybsza go użyje." : "Ustawienie „Nie zużywaj lepszych niż cel” sięga po nie tylko wtedy, gdy dają pełną ścieżkę, więc pokazana jest ścieżka bez nich."}</div>` : ""}<button class="btn small" id="altSwap">Pokaż ścieżkę z nimi</button></div>`; }
-      return `<div class="altbox"><div><b>Ta ścieżka zużywa przedmioty lepsze niż wynik:</b> ${mine.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">Bez nich jest tylko ścieżka z ${missTxt(oR.missing)}, więc pokazana jest ta pełna (ustawienie: lepsze niż cel tylko w ostateczności).</div>` : ""}<button class="btn small" id="altSwap">${cur === F ? "Pokaż ścieżkę bez nich" : "Wróć do ścieżki bez nich"}</button></div>`;
+          return viaHTML() + `<div class="altbox"><div><b>Jest ścieżka z ${oR.missing ? missTxt(oR.missing) : "wszystkim pod ręką"}</b>, ale zużywa ${used.length === 1 ? "twój przedmiot lepszy" : "twoje przedmioty lepsze"} niż wynik: ${used.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">${F.altAtLeast ? "Taki przedmiot jest już co najmniej tak dobry jak cel, więc ustawienie „Nie zużywaj lepszych niż cel” nigdy go sam nie zużywa. Najszybsza go użyje." : "Ustawienie „Nie zużywaj lepszych niż cel” sięga po nie tylko wtedy, gdy dają pełną ścieżkę, więc pokazana jest ścieżka bez nich."}</div>` : ""}<button class="btn small" id="altSwap">Pokaż ścieżkę z nimi</button></div>`; }
+      return viaHTML() + `<div class="altbox"><div><b>Ta ścieżka zużywa przedmioty lepsze niż wynik:</b> ${mine.map(it => itemHTML(it)).join(" ")}</div>${cur === F ? `<div class="note">Bez nich jest tylko ścieżka z ${missTxt(oR.missing)}, więc pokazana jest ta pełna (ustawienie: lepsze niż cel tylko w ostateczności).</div>` : ""}<button class="btn small" id="altSwap">${cur === F ? "Pokaż ścieżkę bez nich" : "Wróć do ścieżki bez nich"}</button></div>`;
     };
-    const modeName = { fast: "najszybsza", cheap: "najtańsza", optimal: "optymalna" }[mode];
+    const modeName0 = { fast: "najszybsza", cheap: "najtańsza", optimal: "optymalna" }[mode];
     const render = () => {
-      const r = routes[pick];
+      const r = routes[pick], modeName = via && cur === via.F ? "przez przedmioty pośrednie" : modeName0;
       const ownedN = r.L - r.missing - r.auction;
       let dearN = 0; walk(r.tree, t => { if (t.auction && tooDear(t)) dearN++; });
       const overTxt = r.over ? ` <span class="warnline">Zużywa ${r.over === 1 ? "1 przedmiot" : `${r.over} przedmioty`} z afiksem wyższym niż cel, bo bez ${r.over === 1 ? "niego" : "nich"} nie ma lepszej ścieżki.</span>` : "";
@@ -1538,6 +1628,7 @@ onmessage = e => {
         <div class="row"><button class="btn primary" id="lockPlan">Zapisz jako plan</button><span class="note">Rezerwuje te przedmioty, żeby inne wyszukiwania ich nie brały.</span></div>`;
       out.querySelectorAll("[data-alt]").forEach(b => b.onclick = () => { pick = +b.dataset.alt; render(); });
       if ($("altSwap")) $("altSwap").onclick = () => { load(other()); render(); };
+      if ($("viaSwap")) $("viaSwap").onclick = () => { load(cur === via.F ? F : via.F); render(); };
       hookDeep(runFind);
       r.done ||= new Set();
       hookSteps(out, r.done);
@@ -2247,6 +2338,7 @@ onmessage = e => {
   const bothNA = () => { const C = compile(); return !(C.hasP && C.hasS) ? "ta kategoria nie ma obu afiksów" : (store.trashMode || "both") !== "both" ? "działa tylko w trybie Oba afiksy" : ""; };
   const basesNA = () => { const C = compile(); return !C.hasP && !C.hasS ? "broń palna: zawsze liczy się baza" : ringLike() ? "w tej kategorii bazy się nie liczą" : ""; };
   const SETTINGS = [
+    { g: "Szukanie ścieżki", k: "stones", def: true, label: "Szukaj przez przedmioty pośrednie", note: "Gdy szukanie kończy się brakującymi przedmiotami, aplikacja próbuje jeszcze ścieżek przez przedmioty pośrednie: robi je tak jak Przeróbka złomu (zwykła, w stronę prefiksu, w stronę sufiksu, tylko duże) albo Najlepszy możliwy, i szuka od nich. Taka ścieżka jest pokazana tylko wtedy, gdy brakuje w niej mniej. Bywa długa i zużywa dużo przedmiotów.", sum: v => `przedmioty pośrednie: <b>${v ? "tak" : "nie"}</b>` },
     { g: "Szukanie ścieżki", k: "noOver", def: true, label: "Nie zużywaj lepszych niż cel", note: "Przedmioty z afiksem wyższym niż w celu są używane tylko wtedy, gdy bez nich nie ma żadnej ścieżki. Nie dotyczy Najszybszej: ona zawsze bierze najkrótszą ścieżkę, a lepsze przedmioty przegrywają tylko remisy.", na: () => (store.mode || "optimal") === "fast" ? "Najszybsza zawsze bierze najkrótszą ścieżkę" : "", sum: v => `lepsze niż cel: <b>${v ? "tylko w ostateczności" : "dozwolone"}</b>` },
     { g: "Szukanie ścieżki", k: "deep", def: false, label: "Głębokie szukanie", note: "Sprawdza większe grupy przedmiotów. Trwa do 15 s; można je przerwać przyciskiem Anuluj. Nie dotyczy Najtańszej.", sum: v => `głębokie szukanie: <b>${v ? "wł." : "wył."}</b>` },
     { g: "Szukanie ścieżki", k: "depth", def: 5, num: [1, 8], label: "Głębokość drzewa w Najtańszej", note: "Ile poziomów połączeń w dół od celu (1–8). Więcej = dłuższe ścieżki z tańszych przedmiotów.", sum: v => `głębokość: <b>${v}</b>` },
@@ -2283,7 +2375,7 @@ onmessage = e => {
       el.innerHTML = `Ustawienia: ${parts.join(" · ")}<button class="linkbtn" data-goset>Zmień</button>`;
       el.querySelector("[data-goset]").onclick = () => setView("settings");
     };
-    line("findSet", (store.mode || "optimal") === "cheap" ? ["noOver", "depth"] : ["noOver", "deep"]);
+    line("findSet", (store.mode || "optimal") === "cheap" ? ["noOver", "depth", "stones"] : ["noOver", "deep", "stones"]);
     line("aucSet", ["affordOnly"]); line("bestSet", ["bestBases"]); line("trashSet", ["trashBases", "trashBig", "trashDir"]);
   }
   const LOCK_SVG = on => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"${on ? ' fill="currentColor" fill-opacity=".3"' : ""}/><path d="${on ? "M8 11V7a4 4 0 0 1 8 0v4" : "M8 11V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
